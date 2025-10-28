@@ -1,0 +1,243 @@
+:root {
+    color-scheme: light dark;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    background: #111;
+    color: #f4f4f4;
+}
+
+.wrapper {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+}
+
+h1 {
+    margin-bottom: 0.5rem;
+    font-size: 2rem;
+}
+
+h2 {
+    margin-top: 0;
+    font-size: 1.4rem;
+}
+
+p {
+    max-width: 720px;
+    line-height: 1.6;
+}
+
+.panel {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-top: 1.5rem;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.dropzone {
+    border: 2px dashed rgba(255, 255, 255, 0.25);
+    border-radius: 12px;
+    padding: 2rem;
+    text-align: center;
+    transition: border-color 0.3s ease, background 0.3s ease;
+}
+
+.dropzone.dragover {
+    border-color: #4cca7a;
+    background: rgba(76, 202, 122, 0.15);
+}
+
+button {
+    background: #4cca7a;
+    color: #0c0c0c;
+    border: none;
+    border-radius: 8px;
+    padding: 0.75rem 1.5rem;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 16px rgba(76, 202, 122, 0.35);
+}
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+button:disabled:hover {
+    transform: none;
+}
+
+.dropzone img {
+    max-width: 100%;
+    border-radius: 12px;
+    margin-top: 1rem;
+}
+
+.results {
+    margin-top: 1.5rem;
+}
+
+.results ul {
+    list-style: none;
+    padding-left: 0;
+}
+
+.results li {
+    margin-bottom: 0.5rem;
+    font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.error {
+    color: #ff7b7b;
+    margin-top: 0.75rem;
+}
+
+.status {
+    margin-top: 0.75rem;
+    color: #9ecbff;
+    font-weight: 500;
+}
+
+.status.success {
+    color: #4cca7a;
+}
+
+.status.fail {
+    color: #ff9f7b;
+}
+
+.hint {
+    margin-top: 0.75rem;
+    font-size: 0.9rem;
+    color: rgba(255, 255, 255, 0.7);
+}
+
+#no-faces-notice {
+    margin-top: 0.75rem;
+}
+
+.slider-row {
+    margin-top: 1.25rem;
+}
+
+.slider-row label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 0.35rem;
+}
+
+.slider-row input[type="range"] {
+    width: 100%;
+    margin-top: 0.5rem;
+}
+
+.slider-value {
+    text-align: right;
+    font-size: 0.9rem;
+    font-variant-numeric: tabular-nums;
+    color: rgba(255, 255, 255, 0.7);
+    margin-top: 0.35rem;
+}
+
+.button-row {
+    margin-top: 1.5rem;
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.video-feed {
+    width: 100%;
+    border-radius: 12px;
+    background: #000;
+    margin-top: 1rem;
+    min-height: 240px;
+    object-fit: cover;
+}
+
+.control-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.control-row button {
+    flex: 1 1 160px;
+}
+
+.result-image {
+    width: 100%;
+    border-radius: 12px;
+    margin-top: 1rem;
+    display: block;
+}
+
+.faces-grid {
+    margin-top: 1rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 1rem;
+}
+
+.face-card {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 0.75rem;
+    text-align: center;
+}
+
+.face-card img {
+    width: 100%;
+    border-radius: 10px;
+    object-fit: cover;
+    max-height: 180px;
+}
+
+.face-card figcaption {
+    margin-top: 0.5rem;
+    font-weight: 600;
+}
+
+.face-card figcaption span {
+    display: block;
+    margin-top: 0.35rem;
+    font-weight: 400;
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.face-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.5);
+    min-height: 160px;
+    font-size: 0.9rem;
+}
+
+@media (max-width: 600px) {
+    .wrapper {
+        padding: 1.5rem 1rem 3rem;
+    }
+
+    .control-row {
+        flex-direction: column;
+    }
+}

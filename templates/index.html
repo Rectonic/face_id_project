@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face ID Playground</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body data-known-count="{{ known_faces|length }}">
+    <div class="wrapper">
+        <h1>Face ID Playground</h1>
+        <p>
+            Drop portrait photos into <code>templates/faces/</code>, start your webcam, and let the app greet people it
+            recognizes. The gallery below uses an ArcFace embedding model to compare live frames with the stored faces.
+        </p>
+
+        <section class="panel" id="faces-panel">
+            <h2>1. Known Faces</h2>
+            {% if known_faces %}
+                <div class="faces-grid">
+                    {% for face in known_faces %}
+                        <figure class="face-card">
+                            {% if face.url %}
+                                <img src="{{ face.url }}" alt="{{ face.name }}">
+                            {% else %}
+                                <div class="face-placeholder">Preview unavailable</div>
+                            {% endif %}
+                            <figcaption>
+                                {{ face.name }}
+                                {% if face.count > 1 %}
+                                    <span>{{ face.count }} photos</span>
+                                {% endif %}
+                            </figcaption>
+                        </figure>
+                    {% endfor %}
+                </div>
+                <p class="hint">
+                    Add more portraits under <code>templates/faces</code> (jpg/png/webp). The server auto-refreshes when files change.
+                </p>
+            {% else %}
+                <p id="no-faces-notice">
+                    No faces loaded yet. Place portrait images inside <code>templates/faces</code> and reload this page.
+                </p>
+            {% endif %}
+        </section>
+
+        <section class="panel" id="match-panel">
+            <h2>2. Live Match Check</h2>
+            <p>
+                Start your webcam and capture a frame whenever you are ready. The similarity threshold controls how strict
+                the match needs to be (higher = stricter).
+            </p>
+            <div class="slider-row">
+                <label for="match-threshold">Similarity threshold</label>
+                <input id="match-threshold" type="range" min="0.30" max="0.80" step="0.01"
+                       value="{{ '%.2f'|format(default_match_threshold) }}">
+                <div class="slider-value"><span id="match-threshold-value">{{ '%.2f'|format(default_match_threshold) }}</span></div>
+            </div>
+            <video id="live-video" class="video-feed" autoplay playsinline muted></video>
+            <canvas id="capture-canvas" hidden></canvas>
+            <div class="control-row">
+                <button type="button" id="start-camera">Start Camera</button>
+                <button type="button" id="stop-camera" disabled>Stop Camera</button>
+                <button type="button" id="check-match" disabled>Check Match</button>
+            </div>
+            <div id="match-error" class="error" hidden></div>
+            <div id="match-status" class="status"></div>
+            <img id="match-result" class="result-image" alt="Match result" hidden>
+        </section>
+
+        <section class="panel" id="detector-panel">
+            <h2>3. Face Detection Sandbox</h2>
+            <form id="detector-form">
+                <div id="detector-dropzone" class="dropzone">
+                    <p><strong>Drop an image</strong> or click to browse</p>
+                    <input id="detector-input" type="file" accept="image/*" hidden>
+                    <img id="detector-preview" alt="Detector preview" hidden>
+                </div>
+                <div class="slider-row">
+                    <label for="detector-threshold">Confidence threshold</label>
+                    <input id="detector-threshold" type="range" min="0.2" max="0.9" value="0.5" step="0.05">
+                    <div class="slider-value"><span id="detector-threshold-value">0.50</span></div>
+                </div>
+                <div class="button-row">
+                    <button type="submit">Detect Faces</button>
+                </div>
+            </form>
+            <div id="detector-error" class="error" hidden></div>
+            <div id="detector-status" class="status"></div>
+        </section>
+
+        <section class="panel results" id="results-panel" hidden>
+            <h2>Detections</h2>
+            <img id="result-image" class="result-image" alt="Detection results">
+            <ul id="results-list"></ul>
+        </section>
+    </div>
+
+    <script>
+        (function () {
+            const state = {
+                hasKnownFaces: {{ (known_faces|length > 0)|tojson }},
+                mediaStream: null,
+                statusTimeouts: new Map(),
+            };
+
+            const detectorDropzone = document.getElementById("detector-dropzone");
+            const detectorInput = document.getElementById("detector-input");
+            const detectorPreview = document.getElementById("detector-preview");
+            const detectorForm = document.getElementById("detector-form");
+            const detectorError = document.getElementById("detector-error");
+            const detectorStatus = document.getElementById("detector-status");
+            const detectorThreshold = document.getElementById("detector-threshold");
+            const detectorThresholdValue = document.getElementById("detector-threshold-value");
+            const resultsPanel = document.getElementById("results-panel");
+            const resultImage = document.getElementById("result-image");
+            const resultsList = document.getElementById("results-list");
+
+            const matchThreshold = document.getElementById("match-threshold");
+            const matchThresholdValue = document.getElementById("match-threshold-value");
+            const liveVideo = document.getElementById("live-video");
+            const captureCanvas = document.getElementById("capture-canvas");
+            const startCameraBtn = document.getElementById("start-camera");
+            const stopCameraBtn = document.getElementById("stop-camera");
+            const checkMatchBtn = document.getElementById("check-match");
+            const matchError = document.getElementById("match-error");
+            const matchStatus = document.getElementById("match-status");
+            const matchResult = document.getElementById("match-result");
+            const noFacesNotice = document.getElementById("no-faces-notice");
+
+            function setError(element, message) {
+                if (!element) return;
+                element.textContent = message || "";
+                element.hidden = !message;
+            }
+
+            function setStatus(element, message, variant) {
+                if (!element) return;
+                element.textContent = message || "";
+                element.classList.remove("success", "fail");
+                if (variant) {
+                    element.classList.add(variant);
+                }
+                const timeout = state.statusTimeouts.get(element);
+                if (timeout) {
+                    clearTimeout(timeout);
+                }
+                if (message) {
+                    const handle = window.setTimeout(() => {
+                        element.textContent = "";
+                        element.classList.remove("success", "fail");
+                        state.statusTimeouts.delete(element);
+                    }, 5000);
+                    state.statusTimeouts.set(element, handle);
+                }
+            }
+
+            function updateKnownFacesState(hasFaces) {
+                state.hasKnownFaces = hasFaces;
+                if (noFacesNotice) {
+                    noFacesNotice.hidden = hasFaces;
+                }
+                if (document.body) {
+                    document.body.dataset.knownCount = hasFaces ? "1" : "0";
+                }
+                updateMatchControls();
+            }
+
+            function showPreview(file, previewElement) {
+                if (!file || !previewElement) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    previewElement.src = event.target.result;
+                    previewElement.hidden = false;
+                };
+                reader.readAsDataURL(file);
+            }
+
+            function setInputFilesFromList(input, fileList) {
+                if (!input || !fileList) return;
+                if (window.DataTransfer) {
+                    const dataTransfer = new DataTransfer();
+                    Array.from(fileList).forEach((file) => dataTransfer.items.add(file));
+                    input.files = dataTransfer.files;
+                } else {
+                    input.files = fileList;
+                }
+            }
+
+            function setupDropzone(dropzone, input, preview) {
+                if (!dropzone || !input) return;
+
+                dropzone.addEventListener("click", () => input.click());
+
+                dropzone.addEventListener("dragover", (event) => {
+                    event.preventDefault();
+                    dropzone.classList.add("dragover");
+                });
+
+                dropzone.addEventListener("dragleave", () => {
+                    dropzone.classList.remove("dragover");
+                });
+
+                dropzone.addEventListener("drop", (event) => {
+                    event.preventDefault();
+                    dropzone.classList.remove("dragover");
+                    if (event.dataTransfer.files.length) {
+                        setInputFilesFromList(input, event.dataTransfer.files);
+                        showPreview(input.files[0], preview);
+                    }
+                });
+
+                input.addEventListener("change", (event) => {
+                    if (event.target.files.length) {
+                        showPreview(event.target.files[0], preview);
+                    }
+                });
+            }
+
+            setupDropzone(detectorDropzone, detectorInput, detectorPreview);
+
+            function updateMatchControls() {
+                const hasStream = Boolean(state.mediaStream);
+                if (startCameraBtn) {
+                    startCameraBtn.disabled = hasStream;
+                }
+                if (stopCameraBtn) {
+                    stopCameraBtn.disabled = !hasStream;
+                }
+                if (checkMatchBtn) {
+                    checkMatchBtn.disabled = !hasStream || !state.hasKnownFaces;
+                }
+            }
+
+            if (detectorThreshold && detectorThresholdValue) {
+                detectorThresholdValue.textContent = Number(detectorThreshold.value).toFixed(2);
+                detectorThreshold.addEventListener("input", () => {
+                    detectorThresholdValue.textContent = Number(detectorThreshold.value).toFixed(2);
+                });
+            }
+
+            if (detectorForm) {
+                detectorForm.addEventListener("submit", async (event) => {
+                    event.preventDefault();
+                    setError(detectorError, "");
+                    setStatus(detectorStatus, "");
+                    resultsPanel.hidden = true;
+
+                    if (!detectorInput.files.length) {
+                        setError(detectorError, "Pick an image before running the detector.");
+                        return;
+                    }
+
+                    const formData = new FormData();
+                    formData.append("image", detectorInput.files[0]);
+                    formData.append("threshold", detectorThreshold.value);
+
+                    setStatus(detectorStatus, "Running detector...");
+
+                    try {
+                        const response = await fetch("/api/detect", {
+                            method: "POST",
+                            body: formData,
+                        });
+
+                        const payload = await response.json();
+
+                        if (!response.ok || payload.error) {
+                            throw new Error(payload.error || "Detector returned an error.");
+                        }
+
+                        resultImage.src = payload.image;
+                        resultImage.hidden = false;
+                        resultsList.innerHTML = "";
+                        if (payload.boxes.length === 0) {
+                            const item = document.createElement("li");
+                            item.textContent = "No faces detected above the chosen threshold.";
+                            resultsList.appendChild(item);
+                        } else {
+                            payload.boxes.forEach((box, index) => {
+                                const item = document.createElement("li");
+                                const confidence = (box.confidence * 100).toFixed(1);
+                                item.textContent = `#${index + 1}: confidence ${confidence}%`;
+                                resultsList.appendChild(item);
+                            });
+                        }
+                        resultsPanel.hidden = false;
+                        setStatus(detectorStatus, `Detected ${payload.boxes.length} face(s).`, "success");
+                    } catch (error) {
+                        setError(detectorError, error.message);
+                        resultsPanel.hidden = true;
+                        setStatus(detectorStatus, "");
+                    }
+                });
+            }
+
+            if (matchThreshold && matchThresholdValue) {
+                matchThresholdValue.textContent = Number(matchThreshold.value).toFixed(2);
+                matchThreshold.addEventListener("input", () => {
+                    matchThresholdValue.textContent = Number(matchThreshold.value).toFixed(2);
+                });
+            }
+
+            async function startCamera() {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    setError(matchError, "Camera APIs are not supported in this browser.");
+                    return;
+                }
+
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    liveVideo.srcObject = stream;
+                    state.mediaStream = stream;
+                    setError(matchError, "");
+                    setStatus(matchStatus, "Camera ready.", "success");
+                    updateMatchControls();
+                } catch (error) {
+                    setError(matchError, error.message || "Unable to access the camera.");
+                    setStatus(matchStatus, "");
+                }
+            }
+
+            function stopCamera() {
+                if (state.mediaStream) {
+                    state.mediaStream.getTracks().forEach((track) => track.stop());
+                }
+                liveVideo.srcObject = null;
+                state.mediaStream = null;
+                matchResult.hidden = true;
+                setStatus(matchStatus, "");
+                updateMatchControls();
+            }
+
+            function captureFrame() {
+                return new Promise((resolve, reject) => {
+                    if (!state.mediaStream) {
+                        reject(new Error("Start the camera before capturing a frame."));
+                        return;
+                    }
+                    const width = liveVideo.videoWidth;
+                    const height = liveVideo.videoHeight;
+                    if (!width || !height) {
+                        reject(new Error("Camera is not ready yet. Try again in a moment."));
+                        return;
+                    }
+                    captureCanvas.width = width;
+                    captureCanvas.height = height;
+                    const context = captureCanvas.getContext("2d");
+                    context.drawImage(liveVideo, 0, 0, width, height);
+                    captureCanvas.toBlob(
+                        (blob) => {
+                            if (blob) {
+                                resolve(blob);
+                            } else {
+                                reject(new Error("Failed to capture frame from camera."));
+                            }
+                        },
+                        "image/jpeg",
+                        0.95
+                    );
+                });
+            }
+
+            async function handleMatch() {
+                setError(matchError, "");
+                setStatus(matchStatus, "Comparing faces...");
+
+                try {
+                    const blob = await captureFrame();
+                    const formData = new FormData();
+                    formData.append("image", blob, "frame.jpg");
+                    if (matchThreshold) {
+                        formData.append("matchThreshold", matchThreshold.value);
+                    }
+
+                    const response = await fetch("/api/match", {
+                        method: "POST",
+                        body: formData,
+                    });
+                    const payload = await response.json();
+
+                    if (!response.ok || payload.error) {
+                        throw new Error(payload.error || "Face match failed.");
+                    }
+
+                    updateKnownFacesState(true);
+
+                    const matched = Boolean(payload.match);
+                    const similarity = Number(payload.similarity || 0);
+                    const threshold = Number(
+                        typeof payload.threshold === "number"
+                            ? payload.threshold
+                            : matchThreshold
+                                ? matchThreshold.value
+                                : {{ default_match_threshold|tojson }}
+                    );
+
+                    if (payload.image) {
+                        matchResult.src = payload.image;
+                        matchResult.hidden = false;
+                    }
+
+                    let message = payload.greeting || (matched ? "Match!" : "Face not recognized.");
+                    message += ` Similarity ${(similarity * 100).toFixed(1)}% (threshold ${(threshold * 100).toFixed(1)}%).`;
+                    const sampleCount = Number(payload.sample_count || 0);
+                    if (sampleCount > 1 && matched) {
+                        message += ` Using ${sampleCount} reference photos.`;
+                    } else if (!matched && sampleCount > 1 && payload.closest && payload.closest.name) {
+                        message += ` ${payload.closest.name} has ${sampleCount} reference photos.`;
+                    }
+                    if (!matched && payload.closest && payload.closest.name) {
+                        message += ` Closest match: ${payload.closest.name}.`;
+                    }
+
+                    setStatus(matchStatus, message, matched ? "success" : "fail");
+                } catch (error) {
+                    setStatus(matchStatus, "");
+                    setError(matchError, error.message);
+                    if (/no known faces/i.test(error.message)) {
+                        updateKnownFacesState(false);
+                    }
+                } finally {
+                    updateMatchControls();
+                }
+            }
+
+            if (startCameraBtn) {
+                startCameraBtn.addEventListener("click", async () => {
+                    await startCamera();
+                });
+            }
+
+            if (stopCameraBtn) {
+                stopCameraBtn.addEventListener("click", () => {
+                    stopCamera();
+                });
+            }
+
+            if (checkMatchBtn) {
+                checkMatchBtn.addEventListener("click", async () => {
+                    checkMatchBtn.disabled = true;
+                    try {
+                        await handleMatch();
+                    } finally {
+                        updateMatchControls();
+                    }
+                });
+            }
+
+            window.addEventListener("beforeunload", () => {
+                stopCamera();
+            });
+
+            updateMatchControls();
+        })();
+    </script>
+</body>
+</html>

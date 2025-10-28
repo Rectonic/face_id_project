@@ -1,0 +1,6 @@
+Flask==3.0.2
+numpy==1.26.4
+opencv-python==4.9.0.80
+Werkzeug==3.0.1
+certifi==2024.8.30
+onnxruntime==1.18.1
