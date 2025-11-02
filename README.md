@@ -7,7 +7,7 @@ Face ID Playground is a self-contained Flask app for experimenting with live fac
 ## Tech Stack
 
 - **Backend**: Flask 3 serving HTML templates and JSON APIs.
-- **Computer Vision**: OpenCV DNN face detector + ArcFace ONNX model executed with ONNX Runtime.
+- **Computer Vision**: Customly trained and built version of OpenCV DNN face detector + ArcFace ONNX model executed with ONNX Runtime.
 - **Data**: Face gallery sourced from images on disk (`templates/faces/`), embeddings cached in memory.
 - **Frontend**: Vanilla HTML/CSS/JS under `templates/` and `static/`.
 
@@ -64,6 +64,7 @@ requirements.txt       # Python dependencies
 - **Thresholds**: Default detection threshold is 0.5; default match threshold is 0.45. Both can be adjusted from the UI for quick experiments. To hard-code new defaults, edit the constants near the top of `app/main.py`.
 - **Model swaps**: Update `PROTOTXT_URL`, `MODEL_URL`, or `ARCFACE_ARCHIVE_URL` inside `app/main.py` if you want to point to different pretrained models. Adjust preprocessing/postprocessing as required by the new models.
 - **Serving options**: For production, wrap the Flask app with a WSGI server such as `gunicorn` and run behind HTTPS so browsers allow camera access without complaints.
+
 
 ---
 
