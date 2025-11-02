@@ -1,69 +1,96 @@
 # Face ID Playground
 
-A tiny web application that wraps OpenCV's face detector and an ArcFace embedding model so you can prototype Face ID-style flows entirely on your machine. Drop a collection of portraits into `templates/faces/`, start your webcam, and watch the app greet anyone it recognizes. You can still experiment with plain detection to inspect bounding boxes and confidence values.
+Face ID Playground is a self-contained Flask app for experimenting with live face detection and recognition. It bundles OpenCV’s SSD face detector with an InsightFace ArcFace embedding model so you can prototype “Face ID” style flows locally. Drop portraits into `templates/faces/`, run the server, and the browser UI lets you try detection, similarity matching, and live webcam checks.
 
-## Features
+---
 
-- Uses OpenCV's high-quality DNN face detector (`res10_300x300_ssd_iter_140000.caffemodel`).
-- Extracts 512-D ArcFace embeddings with ONNX Runtime for accurate identity separation.
-- Auto-builds an in-memory gallery from portrait images stored in `templates/faces/`, averaging all photos per person for stability.
-- Live webcam panel continuously matches frames while the camera is active and overlays the best match with a friendly greeting.
-- Adjustable similarity and detection thresholds so you can tune sensitivity quickly.
-- REST API exposes `/api/detect`, `/api/match`, and `/faces/<filename>` for integration tests or headless workflows.
+## Tech Stack
 
-## Getting Started
+- **Backend**: Flask 3 serving HTML templates and JSON APIs.
+- **Computer Vision**: OpenCV DNN face detector + ArcFace ONNX model executed with ONNX Runtime.
+- **Data**: Face gallery sourced from images on disk (`templates/faces/`), embeddings cached in memory.
+- **Frontend**: Vanilla HTML/CSS/JS under `templates/` and `static/`.
 
-1. Create and activate a virtual environment (optional but recommended):
+---
 
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
+## Prerequisites
 
-2. Install dependencies:
+- Python 3.10+ with `pip`.
+- Internet access on first run so the model weights can download (~180 MB total).
+- A webcam (optional) for the live match panel.
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+If you are working on macOS/Linux, consider installing `python3-venv` or `virtualenv` for isolated environments.
 
-3. Run the development server:
+---
 
-   ```bash
-   python app/main.py
-   ```
+## Quick Start
 
-   The server starts on `http://localhost:8000`.
+```bash
+# 1. (Optional) create an isolated environment
+python3 -m venv .venv
+source .venv/bin/activate
 
-4. Open your browser to `http://localhost:8000`. The first visit downloads the detector and embedding weights under `models/`.
+# 2. Install third-party packages
+pip install -r requirements.txt
 
-5. Drop portrait images (JPG/PNG/WebP/BMP) inside `templates/faces/`. You can:
-   - Place a single photo directly under `templates/faces/` (its file name supplies the display label).
-   - Create subfolders such as `templates/faces/alice/` and add multiple photos per person—the app averages their embeddings automatically.
-   Refresh the page to see the gallery update.
+# 3. Launch the development server
+python app/main.py --host 0.0.0.0 --port 8000
+```
 
-## Face Matching Workflow
+Visit `http://localhost:8000` in a browser. The first request downloads the detector and ArcFace weights into `models/`.
 
-1. **Curate the gallery** – place headshots in `templates/faces/`. The server automatically recomputes embeddings (and averages all photos per identity) whenever the directory changes.
-2. **Start the webcam** – click **Start Camera** in the live match panel. Allow browser camera access when prompted.
-3. **Let the live matcher run** – the app continuously captures frames, compares them to every embedding, and updates the overlay with similarity metrics and a greeting. Use the **Check Now** button if you want to trigger an immediate re-check.
-4. **Experiment freely** – use the detection sandbox to verify bounding boxes and scores on arbitrary images.
+---
 
-## REST Endpoints
+## Project Layout
 
-- `POST /api/match` – multipart form with `image` and optional `matchThreshold` (0–1). Responds with `match`, `name`, raw cosine similarity, and an annotated frame.
-- `POST /api/detect` – multipart form with `image` and optional `threshold`. Returns normalized boxes and an annotated preview.
-- `GET /faces/<filename>` – serves gallery images stored under `templates/faces/`.
+```
+app/
+  main.py              # Flask app, background workers, detection/matching logic
+models/                # Auto-populated with detector and ArcFace weights
+static/                # CSS/JS/assets for the browser UI
+templates/
+  faces/               # Gallery of known faces (your photos go here)
+  index.html           # Main web UI
+requirements.txt       # Python dependencies
+```
 
-## Notes
+---
 
-- Model weights download from the official OpenCV and InsightFace mirrors. Keep an internet connection the first time you run the app so the files cache locally (the ArcFace model is ~170&nbsp;MB).
-- The similarity comparison defaults to 0.45 (a balanced ArcFace threshold). Increase it for stricter matches or lower it for leniency.
-- Embeddings are recomputed from disk whenever the gallery directory changes, so the app stays in sync with new or updated photos.
-- The UI uses plain browser APIs. For production, consider HTTPS to avoid camera permission friction on non-localhost hosts.
-- `/api/match` requests run through a small worker queue so the ArcFace model processes one frame at a time; clients automatically back off when they receive a 429 "busy" response.
+## Customizing the Experience
 
-## Next Steps
+- **Gallery management**: Add JPG/PNG/WebP/BMP images to `templates/faces/`.  
+  - Single image: `templates/faces/alice.jpg` labels the person “alice”.  
+  - Multiple images per person: create a folder (`templates/faces/alice/portrait1.jpg`, etc.). The app averages embeddings per folder.
+- **Thresholds**: Default detection threshold is 0.5; default match threshold is 0.45. Both can be adjusted from the UI for quick experiments. To hard-code new defaults, edit the constants near the top of `app/main.py`.
+- **Model swaps**: Update `PROTOTXT_URL`, `MODEL_URL`, or `ARCFACE_ARCHIVE_URL` inside `app/main.py` if you want to point to different pretrained models. Adjust preprocessing/postprocessing as required by the new models.
+- **Serving options**: For production, wrap the Flask app with a WSGI server such as `gunicorn` and run behind HTTPS so browsers allow camera access without complaints.
 
-- Swap in a different detector (e.g., RetinaFace or YOLO-based models) by adjusting the weights and inference pipeline in `app/main.py`.
-- Persist embeddings alongside user identities in a database so the match endpoint can return structured records or audit trails.
-- Add liveness detection or temporal smoothing if you plan to exercise stronger spoofing resistance.
+---
+
+## API Endpoints
+
+- `POST /api/detect`  
+  Send multipart form data with `image=<file>` and optional `threshold=<float 0-1>`. Response includes normalized bounding boxes and an annotated preview image (Base64).
+- `POST /api/match`  
+  Send multipart form data with `image=<file>` and optional `matchThreshold=<float 0-1>`. Response returns the best match, cosine similarity, and the annotated preview. A lightweight queue serializes match jobs to keep ONNX Runtime responsive.
+- `GET /faces/<filename>`  
+  Serves gallery assets for embedding in the UI or for verification.
+
+---
+
+## Development Tips
+
+- **Hot reload**: Flask runs in debug mode by default (`app.run(debug=True, ...)`) so code changes reload automatically.
+- **Updating dependencies**: Add new Python packages to `requirements.txt` and reinstall (`pip install -r requirements.txt`).
+- **Testing new photos**: After adding or editing files in `templates/faces/`, refresh the web page. The server re-indexes and recomputes embeddings automatically.
+- **Cleaning downloads**: Delete files under `models/` if you need to force a fresh model download.
+
+---
+
+## Troubleshooting
+
+- **Model download failures**: Ensure outbound HTTPS access. If needed, download the files manually and place them in `models/` using the filenames referenced in `app/main.py`.
+- **Camera blocked**: Browsers only grant webcam access over HTTPS or `localhost`. Use `https://localhost:<port>` with a dev certificate or keep testing on the same machine as the server.
+- **High CPU usage**: Matching work is serialized through a queue. If you expect heavy load, consider increasing the worker count and splitting requests across processes.
+
+Enjoy exploring face detection and recognition locally!
