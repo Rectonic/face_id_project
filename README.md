@@ -7,7 +7,7 @@ A tiny web application that wraps OpenCV's face detector and an ArcFace embeddin
 - Uses OpenCV's high-quality DNN face detector (`res10_300x300_ssd_iter_140000.caffemodel`).
 - Extracts 512-D ArcFace embeddings with ONNX Runtime for accurate identity separation.
 - Auto-builds an in-memory gallery from portrait images stored in `templates/faces/`, averaging all photos per person for stability.
-- Live webcam panel captures a frame on demand and overlays the best match with a friendly greeting.
+- Live webcam panel continuously matches frames while the camera is active and overlays the best match with a friendly greeting.
 - Adjustable similarity and detection thresholds so you can tune sensitivity quickly.
 - REST API exposes `/api/detect`, `/api/match`, and `/faces/<filename>` for integration tests or headless workflows.
 
@@ -45,7 +45,7 @@ A tiny web application that wraps OpenCV's face detector and an ArcFace embeddin
 
 1. **Curate the gallery** – place headshots in `templates/faces/`. The server automatically recomputes embeddings (and averages all photos per identity) whenever the directory changes.
 2. **Start the webcam** – click **Start Camera** in the live match panel. Allow browser camera access when prompted.
-3. **Check match** – when someone is in frame, hit **Check Match**. The app captures the current video frame, compares it to every embedding, and returns a green (match) or red (no match) overlay plus similarity metrics and a greeting.
+3. **Let the live matcher run** – the app continuously captures frames, compares them to every embedding, and updates the overlay with similarity metrics and a greeting. Use the **Check Now** button if you want to trigger an immediate re-check.
 4. **Experiment freely** – use the detection sandbox to verify bounding boxes and scores on arbitrary images.
 
 ## REST Endpoints
@@ -60,6 +60,7 @@ A tiny web application that wraps OpenCV's face detector and an ArcFace embeddin
 - The similarity comparison defaults to 0.45 (a balanced ArcFace threshold). Increase it for stricter matches or lower it for leniency.
 - Embeddings are recomputed from disk whenever the gallery directory changes, so the app stays in sync with new or updated photos.
 - The UI uses plain browser APIs. For production, consider HTTPS to avoid camera permission friction on non-localhost hosts.
+- `/api/match` requests run through a small worker queue so the ArcFace model processes one frame at a time; clients automatically back off when they receive a 429 "busy" response.
 
 ## Next Steps
 

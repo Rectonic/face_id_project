@@ -47,8 +47,8 @@
         <section class="panel" id="match-panel">
             <h2>2. Live Match Check</h2>
             <p>
-                Start your webcam and capture a frame whenever you are ready. The similarity threshold controls how strict
-                the match needs to be (higher = stricter).
+                Start your webcam and live matching runs automatically while the feed is active. Adjust the similarity threshold
+                to control how strict the comparison is (higher = stricter). Use the button to trigger an on-demand check at any time.
             </p>
             <div class="slider-row">
                 <label for="match-threshold">Similarity threshold</label>
@@ -61,7 +61,7 @@
             <div class="control-row">
                 <button type="button" id="start-camera">Start Camera</button>
                 <button type="button" id="stop-camera" disabled>Stop Camera</button>
-                <button type="button" id="check-match" disabled>Check Match</button>
+                <button type="button" id="check-match" disabled>Check Now</button>
             </div>
             <div id="match-error" class="error" hidden></div>
             <div id="match-status" class="status"></div>
@@ -98,10 +98,15 @@
 
     <script>
         (function () {
+            const MATCH_INTERVAL_MS = 2000;
             const state = {
                 hasKnownFaces: {{ (known_faces|length > 0)|tojson }},
                 mediaStream: null,
                 statusTimeouts: new Map(),
+                autoMatchTimer: null,
+                autoMatchEnabled: false,
+                matchInFlight: false,
+                dynamicInterval: MATCH_INTERVAL_MS,
             };
 
             const detectorDropzone = document.getElementById("detector-dropzone");
@@ -164,6 +169,9 @@
                     document.body.dataset.knownCount = hasFaces ? "1" : "0";
                 }
                 updateMatchControls();
+                if (hasFaces && state.mediaStream) {
+                    beginAutoMatch(true);
+                }
             }
 
             function showPreview(file, previewElement) {
@@ -218,6 +226,58 @@
             }
 
             setupDropzone(detectorDropzone, detectorInput, detectorPreview);
+
+            function clearAutoMatchTimer() {
+                if (state.autoMatchTimer) {
+                    window.clearTimeout(state.autoMatchTimer);
+                    state.autoMatchTimer = null;
+                }
+            }
+
+            function stopAutoMatch() {
+                state.autoMatchEnabled = false;
+                clearAutoMatchTimer();
+                state.dynamicInterval = MATCH_INTERVAL_MS;
+            }
+
+            function scheduleAutoMatch(delay) {
+                if (!state.autoMatchEnabled) {
+                    return;
+                }
+                clearAutoMatchTimer();
+                const nextDelay = typeof delay === "number" ? delay : state.dynamicInterval;
+                state.autoMatchTimer = window.setTimeout(async () => {
+                    state.autoMatchTimer = null;
+                    if (!state.autoMatchEnabled || !state.mediaStream) {
+                        return;
+                    }
+                    if (!state.hasKnownFaces) {
+                        scheduleAutoMatch(MATCH_INTERVAL_MS);
+                        return;
+                    }
+                    if (state.matchInFlight) {
+                        scheduleAutoMatch(MATCH_INTERVAL_MS);
+                        return;
+                    }
+                    try {
+                        await handleMatch({ isAuto: true });
+                    } finally {
+                        if (state.autoMatchEnabled) {
+                            scheduleAutoMatch();
+                        }
+                    }
+                }, nextDelay);
+            }
+
+            function beginAutoMatch(immediate = false) {
+                if (!state.mediaStream) {
+                    return;
+                }
+                state.autoMatchEnabled = true;
+                state.dynamicInterval = MATCH_INTERVAL_MS;
+                const delay = immediate ? 0 : MATCH_INTERVAL_MS;
+                scheduleAutoMatch(delay);
+            }
 
             function updateMatchControls() {
                 const hasStream = Boolean(state.mediaStream);
@@ -313,10 +373,12 @@
                     state.mediaStream = stream;
                     setError(matchError, "");
                     setStatus(matchStatus, "Camera ready.", "success");
+                    beginAutoMatch(true);
                     updateMatchControls();
                 } catch (error) {
                     setError(matchError, error.message || "Unable to access the camera.");
                     setStatus(matchStatus, "");
+                    stopAutoMatch();
                 }
             }
 
@@ -326,8 +388,10 @@
                 }
                 liveVideo.srcObject = null;
                 state.mediaStream = null;
+                state.matchInFlight = false;
                 matchResult.hidden = true;
                 setStatus(matchStatus, "");
+                stopAutoMatch();
                 updateMatchControls();
             }
 
@@ -361,9 +425,32 @@
                 });
             }
 
-            async function handleMatch() {
-                setError(matchError, "");
-                setStatus(matchStatus, "Comparing faces...");
+            async function handleMatch(options = {}) {
+                const { isAuto = false } = options;
+
+                if (!state.mediaStream) {
+                    if (!isAuto) {
+                        setError(matchError, "Start the camera before matching.");
+                    }
+                    return;
+                }
+
+                if (!state.hasKnownFaces) {
+                    if (!isAuto) {
+                        setError(matchError, "Add reference photos under templates/faces/ first.");
+                    }
+                    return;
+                }
+
+                if (state.matchInFlight) {
+                    return;
+                }
+
+                state.matchInFlight = true;
+                if (!isAuto) {
+                    setError(matchError, "");
+                    setStatus(matchStatus, "Comparing faces...");
+                }
 
                 try {
                     const blob = await captureFrame();
@@ -380,10 +467,13 @@
                     const payload = await response.json();
 
                     if (!response.ok || payload.error) {
-                        throw new Error(payload.error || "Face match failed.");
+                        const err = new Error(payload.error || "Face match failed.");
+                        err.status = response.status;
+                        throw err;
                     }
 
                     updateKnownFacesState(true);
+                    state.dynamicInterval = MATCH_INTERVAL_MS;
 
                     const matched = Boolean(payload.match);
                     const similarity = Number(payload.similarity || 0);
@@ -413,14 +503,36 @@
                     }
 
                     setStatus(matchStatus, message, matched ? "success" : "fail");
+                    setError(matchError, "");
                 } catch (error) {
-                    setStatus(matchStatus, "");
-                    setError(matchError, error.message);
-                    if (/no known faces/i.test(error.message)) {
+                    const message = error.message || "Face match failed.";
+                    const status = typeof error.status === "number" ? error.status : null;
+
+                    if (status === 429 || status === 503) {
+                        state.dynamicInterval = Math.min(
+                            state.dynamicInterval * 1.5,
+                            MATCH_INTERVAL_MS * 5
+                        );
+                    }
+
+                    if (isAuto && (status === 422 || /No face detected/i.test(message))) {
+                        setError(matchError, "");
+                        setStatus(matchStatus, "Looking for a face...");
+                    } else {
+                        setStatus(matchStatus, "");
+                        setError(matchError, message);
+                    }
+
+                    if (/no known faces/i.test(message)) {
                         updateKnownFacesState(false);
+                        stopAutoMatch();
                     }
                 } finally {
+                    state.matchInFlight = false;
                     updateMatchControls();
+                    if (state.autoMatchEnabled && !isAuto) {
+                        scheduleAutoMatch();
+                    }
                 }
             }
 
@@ -438,12 +550,7 @@
 
             if (checkMatchBtn) {
                 checkMatchBtn.addEventListener("click", async () => {
-                    checkMatchBtn.disabled = true;
-                    try {
-                        await handleMatch();
-                    } finally {
-                        updateMatchControls();
-                    }
+                    await handleMatch();
                 });
             }
 

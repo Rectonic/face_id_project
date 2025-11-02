@@ -2,6 +2,7 @@ import argparse
 import base64
 import math
 import pathlib
+import queue
 import shutil
 import ssl
 import threading
@@ -45,6 +46,23 @@ arcface_lock = threading.Lock()
 known_faces_lock = threading.Lock()
 known_faces_snapshot: Tuple[Tuple[str, float, int], ...] = ()
 known_faces: Dict[str, Dict[str, object]] = {}
+
+MATCH_QUEUE_MAXSIZE = 2
+MATCH_TIMEOUT_SECONDS = 10
+
+
+class MatchJob:
+    __slots__ = ("image_bytes", "threshold", "event", "result", "error")
+
+    def __init__(self, image_bytes: bytes, threshold: float):
+        self.image_bytes = image_bytes
+        self.threshold = threshold
+        self.event = threading.Event()
+        self.result: Optional[Tuple[int, Dict[str, object]]] = None
+        self.error: Optional[Exception] = None
+
+
+match_queue: "queue.Queue[MatchJob]" = queue.Queue(maxsize=MATCH_QUEUE_MAXSIZE)
 
 
 def _download_file(url: str, target: pathlib.Path) -> None:
@@ -102,6 +120,19 @@ def load_embedding_model() -> ort.InferenceSession:
         providers=["CPUExecutionProvider"],
     )
     return session
+
+
+def match_worker() -> None:
+    while True:
+        job = match_queue.get()
+        try:
+            status, payload = perform_match(job.image_bytes, job.threshold)
+            job.result = (status, payload)
+        except Exception as exc:  # pragma: no cover - background thread safety
+            job.error = exc
+        finally:
+            job.event.set()
+            match_queue.task_done()
 
 
 def detect_faces(
@@ -369,6 +400,79 @@ def load_known_faces() -> Dict[str, Dict[str, object]]:
     return aggregated
 
 
+def perform_match(image_bytes: bytes, threshold_value: float) -> Tuple[int, Dict[str, object]]:
+    ensure_known_faces_loaded()
+    with known_faces_lock:
+        known_items = list(known_faces.items())
+
+    if not known_items:
+        return 400, {
+            "error": (
+                "No known faces loaded. Add portrait images under "
+                "templates/faces and reload the page."
+            )
+        }
+
+    np_array = np.frombuffer(image_bytes, dtype=np.uint8)
+    image = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
+    if image is None:
+        return 400, {"error": "Unable to decode the uploaded frame."}
+
+    candidate_embedding, detection = build_face_embedding(image, detector_threshold=0.4)
+    if candidate_embedding is None or detection is None:
+        return 422, {"error": "No face detected in the frame."}
+
+    best_similarity = -1.0
+    best_info: Optional[Dict[str, object]] = None
+    for _, info in known_items:
+        similarity = cosine_similarity(info["embedding"], candidate_embedding)
+        if similarity > best_similarity:
+            best_similarity = similarity
+            best_info = info
+
+    if best_info is None:
+        return 500, {"error": "No embeddings are available to compare."}
+
+    is_match = best_similarity >= threshold_value
+    match_name = best_info["display_name"] if is_match else None
+    label = best_info["display_name"] if is_match else "UNKNOWN"
+    color = (0, 255, 0) if is_match else (0, 0, 255)
+    secondary_text = f"(sim {best_similarity*100:.1f}%)"
+    annotated = annotate_image(image, detection, label, color, secondary_text=secondary_text)
+    greeting = (
+        f"Hello, {best_info['display_name']}!"
+        if is_match
+        else "Face not recognized. Try again."
+    )
+    sample_count = int(best_info.get("count", 1))
+    samples = best_info.get("filenames", [])
+
+    img_h, img_w = image.shape[:2]
+    normalized_box = {
+        "x": detection[0] / img_w,
+        "y": detection[1] / img_h,
+        "width": detection[2] / img_w,
+        "height": detection[3] / img_h,
+        "confidence": detection[4],
+    }
+
+    return 200, {
+        "match": is_match,
+        "name": match_name,
+        "similarity": best_similarity,
+        "threshold": threshold_value,
+        "box": normalized_box,
+        "image": encode_image_to_data_url(annotated),
+        "greeting": greeting,
+        "closest": {
+            "name": best_info["display_name"],
+            "similarity": best_similarity,
+        },
+        "sample_count": sample_count,
+        "samples": samples,
+    }
+
+
 def reload_known_faces() -> None:
     global known_faces_snapshot
     faces = load_known_faces()
@@ -402,6 +506,10 @@ arcface_session = load_embedding_model()
 arcface_input_name = arcface_session.get_inputs()[0].name
 DEFAULT_MATCH_THRESHOLD = 0.45
 reload_known_faces()
+
+
+worker_thread = threading.Thread(target=match_worker, daemon=True)
+worker_thread.start()
 
 
 @app.route("/faces/<path:filename>")
@@ -501,17 +609,20 @@ def api_detect():
 def api_match_face():
     ensure_known_faces_loaded()
     with known_faces_lock:
-        known_items = list(known_faces.items())
+        has_faces = bool(known_faces)
 
-    if not known_items:
-        return jsonify(
-            {
-                "error": (
-                    "No known faces loaded. Add portrait images under "
-                    "templates/faces and reload the page."
-                )
-            }
-        ), 400
+    if not has_faces:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "No known faces loaded. Add portrait images under "
+                        "templates/faces and reload the page."
+                    )
+                }
+            ),
+            400,
+        )
 
     if "image" not in request.files:
         return jsonify({"error": "No file uploaded under field 'image'."}), 400
@@ -525,67 +636,27 @@ def api_match_face():
         threshold_value = DEFAULT_MATCH_THRESHOLD
     else:
         threshold_value = float(np.clip(match_threshold, 0.1, 0.99))
+    if match_queue.full():
+        return (
+            jsonify({"error": "Matcher busy. Try again in a moment."}),
+            429,
+        )
 
-    np_array = np.frombuffer(file_bytes, dtype=np.uint8)
-    image = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
-    if image is None:
-        return jsonify({"error": "Unable to decode the uploaded frame."}), 400
+    job = MatchJob(file_bytes, threshold_value)
+    match_queue.put(job)
 
-    candidate_embedding, detection = build_face_embedding(image, detector_threshold=0.4)
-    if candidate_embedding is None or detection is None:
-        return jsonify({"error": "No face detected in the frame."}), 422
+    if not job.event.wait(timeout=MATCH_TIMEOUT_SECONDS):
+        return jsonify({"error": "Matcher timed out. Please retry."}), 503
 
-    best_similarity = -1.0
-    best_info: Optional[Dict[str, object]] = None
-    for _, info in known_items:
-        similarity = cosine_similarity(info["embedding"], candidate_embedding)
-        if similarity > best_similarity:
-            best_similarity = similarity
-            best_info = info
+    if job.error:
+        app.logger.exception("Match worker error", exc_info=job.error)
+        return jsonify({"error": "Internal matcher error."}), 500
 
-    if best_info is None:
-        return jsonify({"error": "No embeddings are available to compare."}), 500
+    if not job.result:
+        return jsonify({"error": "Matcher returned no result."}), 500
 
-    is_match = best_similarity >= threshold_value
-    match_name = best_info["display_name"] if is_match else None
-    label = best_info["display_name"] if is_match else "UNKNOWN"
-    color = (0, 255, 0) if is_match else (0, 0, 255)
-    secondary_text = f"(sim {best_similarity*100:.1f}%)"
-    annotated = annotate_image(image, detection, label, color, secondary_text=secondary_text)
-    greeting = (
-        f"Hello, {best_info['display_name']}!"
-        if is_match
-        else "Face not recognized. Try again."
-    )
-    sample_count = int(best_info.get("count", 1))
-    samples = best_info.get("filenames", [])
-
-    img_h, img_w = image.shape[:2]
-    normalized_box = {
-        "x": detection[0] / img_w,
-        "y": detection[1] / img_h,
-        "width": detection[2] / img_w,
-        "height": detection[3] / img_h,
-        "confidence": detection[4],
-    }
-
-    return jsonify(
-        {
-            "match": is_match,
-            "name": match_name,
-            "similarity": best_similarity,
-            "threshold": threshold_value,
-            "box": normalized_box,
-            "image": encode_image_to_data_url(annotated),
-            "greeting": greeting,
-            "closest": {
-                "name": best_info["display_name"],
-                "similarity": best_similarity,
-            },
-            "sample_count": sample_count,
-            "samples": samples,
-        }
-    )
+    status, payload = job.result
+    return jsonify(payload), status
 
 
 def create_app() -> Flask:
