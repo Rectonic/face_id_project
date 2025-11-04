@@ -1,57 +1,76 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Face ID Playground</title>
+    <title>Песочница Face ID</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body data-known-count="{{ known_faces|length }}">
     <div class="wrapper">
-        <h1>Face ID Playground</h1>
+        <h1>Песочница Face ID</h1>
         <p>
-            Drop portrait photos into <code>templates/faces/</code>, start your webcam, and let the app greet people it
-            recognizes. The gallery below uses an ArcFace embedding model to compare live frames with the stored faces.
+            Загрузите портреты, включите веб-камеру - и приложение поприветствует каждого, кого узнает. Галерея работает на базе
+            детектора OpenCV и кастомной модели, разработанной Боисхоном на базе ArcFace.
         </p>
 
-        <section class="panel" id="faces-panel">
-            <h2>1. Known Faces</h2>
-            {% if known_faces %}
-                <div class="faces-grid">
-                    {% for face in known_faces %}
-                        <figure class="face-card">
-                            {% if face.url %}
-                                <img src="{{ face.url }}" alt="{{ face.name }}">
-                            {% else %}
-                                <div class="face-placeholder">Preview unavailable</div>
-                            {% endif %}
-                            <figcaption>
-                                {{ face.name }}
-                                {% if face.count > 1 %}
-                                    <span>{{ face.count }} photos</span>
-                                {% endif %}
-                            </figcaption>
-                        </figure>
-                    {% endfor %}
+        <section class="panel" id="upload-panel">
+            <h2>1. Добавьте ваши фото</h2>
+            <form id="upload-form">
+                <div class="form-group">
+                    <label for="upload-name">Имя человека</label>
+                    <input id="upload-name" type="text" placeholder="например, Иван Иванов" required>
                 </div>
-                <p class="hint">
-                    Add more portraits under <code>templates/faces</code> (jpg/png/webp). The server auto-refreshes when files change.
-                </p>
-            {% else %}
-                <p id="no-faces-notice">
-                    No faces loaded yet. Place portrait images inside <code>templates/faces</code> and reload this page.
-                </p>
-            {% endif %}
+                <div id="upload-dropzone" class="dropzone" style="margin-top: 1rem;">
+                    <p><strong>Перетащите портреты</strong> или нажмите, чтобы выбрать файлы</p>
+                    <input id="upload-input" type="file" accept="image/*" multiple hidden>
+                    <img id="upload-preview" alt="Предпросмотр" hidden>
+                    <div id="upload-count" class="hint" hidden></div>
+                </div>
+                <div class="button-row">
+                    <button type="submit">Загрузить фото</button>
+                </div>
+            </form>
+            <div id="upload-error" class="error" hidden></div>
+            <div id="upload-status" class="status"></div>
+        </section>
+
+        <section class="panel" id="faces-panel">
+            <h2>2. Библиотека лиц</h2>
+            <div class="faces-grid" id="faces-grid" {% if not known_faces %}hidden{% endif %}>
+                {% for face in known_faces %}
+                    <figure class="face-card" data-slug="{{ face.slug }}">
+                        <button type="button" class="delete-face" data-slug="{{ face.slug }}">Удалить</button>
+                        {% if face.url %}
+                            <img src="{{ face.url }}" alt="{{ face.name }}">
+                        {% else %}
+                            <div class="face-placeholder">Нет превью</div>
+                        {% endif %}
+                        <figcaption>
+                            {{ face.name }}
+                            {% if face.count > 1 %}
+                                <span>{{ face.count }} фото</span>
+                            {% endif %}
+                        </figcaption>
+                    </figure>
+                {% endfor %}
+            </div>
+            <p class="hint" id="faces-hint" {% if not known_faces %}hidden{% endif %}>
+                Загрузите дополнительные фото выше (jpg/png/webp) или положите файлы в <code>templates/faces</code>. Галерея обновится автоматически.
+            </p>
+            <p id="no-faces-notice" {% if known_faces %}hidden{% endif %}>
+                Пока нет загруженных лиц. Добавьте портреты выше, чтобы создать галерею.
+            </p>
         </section>
 
         <section class="panel" id="match-panel">
-            <h2>2. Live Match Check</h2>
+            <h2>3. Живая проверка</h2>
             <p>
-                Start your webcam and live matching runs automatically while the feed is active. Adjust the similarity threshold
-                to control how strict the comparison is (higher = stricter). Use the button to trigger an on-demand check at any time.
+                Включите веб-камеру — и сверка будет идти автоматически, пока поток активен. Настройте порог похожести, чтобы управлять
+                строгостью сравнения (чем выше значение, тем строже). При необходимости нажмите «Проверить сейчас».
             </p>
             <div class="slider-row">
-                <label for="match-threshold">Similarity threshold</label>
+                <label for="match-threshold">Порог похожести</label>
                 <input id="match-threshold" type="range" min="0.30" max="0.80" step="0.01"
                        value="{{ '%.2f'|format(default_match_threshold) }}">
                 <div class="slider-value"><span id="match-threshold-value">{{ '%.2f'|format(default_match_threshold) }}</span></div>
@@ -59,30 +78,52 @@
             <video id="live-video" class="video-feed" autoplay playsinline muted></video>
             <canvas id="capture-canvas" hidden></canvas>
             <div class="control-row">
-                <button type="button" id="start-camera">Start Camera</button>
-                <button type="button" id="stop-camera" disabled>Stop Camera</button>
-                <button type="button" id="check-match" disabled>Check Now</button>
+                <button type="button" id="start-camera">Включить камеру</button>
+                <button type="button" id="stop-camera" disabled>Выключить камеру</button>
+                <button type="button" id="capture-photo" disabled>Сделать снимок</button>
+                <button type="button" id="check-match" disabled>Проверить сейчас</button>
             </div>
             <div id="match-error" class="error" hidden></div>
             <div id="match-status" class="status"></div>
-            <img id="match-result" class="result-image" alt="Match result" hidden>
+            <img id="match-result" class="result-image" alt="Результат сверки" hidden>
         </section>
 
+        <div id="capture-modal" class="modal" hidden>
+            <div class="modal-content">
+                <h3>Сохранить снимок</h3>
+                <p class="hint">
+                    1. Нажмите «Сделать снимок», когда лицо хорошо видно в кадре.<br>
+                    2. При необходимости скорректируйте имя — оно сохранится вместе с фото.<br>
+                    3. Нажмите «Сохранить», чтобы добавить изображение в галерею.
+                </p>
+                <img id="capture-preview" alt="Захваченное изображение">
+                <div class="form-group">
+                    <label for="capture-name">Имя человека</label>
+                    <input id="capture-name" type="text" placeholder="например, Иван Иванов">
+                </div>
+                <div id="capture-error" class="error" hidden></div>
+                <div class="button-row">
+                    <button type="button" id="cancel-capture">Отмена</button>
+                    <button type="button" id="save-capture">Сохранить</button>
+                </div>
+            </div>
+        </div>
+
         <section class="panel" id="detector-panel">
-            <h2>3. Face Detection Sandbox</h2>
+            <h2>4. Песочница детектора</h2>
             <form id="detector-form">
                 <div id="detector-dropzone" class="dropzone">
-                    <p><strong>Drop an image</strong> or click to browse</p>
+                    <p><strong>Перетащите изображение</strong> или нажмите, чтобы выбрать</p>
                     <input id="detector-input" type="file" accept="image/*" hidden>
-                    <img id="detector-preview" alt="Detector preview" hidden>
+                    <img id="detector-preview" alt="Предпросмотр" hidden>
                 </div>
                 <div class="slider-row">
-                    <label for="detector-threshold">Confidence threshold</label>
+                    <label for="detector-threshold">Порог детектора</label>
                     <input id="detector-threshold" type="range" min="0.2" max="0.9" value="0.5" step="0.05">
                     <div class="slider-value"><span id="detector-threshold-value">0.50</span></div>
                 </div>
                 <div class="button-row">
-                    <button type="submit">Detect Faces</button>
+                    <button type="submit">Определить лица</button>
                 </div>
             </form>
             <div id="detector-error" class="error" hidden></div>
@@ -90,10 +131,15 @@
         </section>
 
         <section class="panel results" id="results-panel" hidden>
-            <h2>Detections</h2>
-            <img id="result-image" class="result-image" alt="Detection results">
+            <h2>Результаты детектора</h2>
+            <img id="result-image" class="result-image" alt="Результаты детектора">
             <ul id="results-list"></ul>
         </section>
+    </div>
+
+    <div id="global-loader" class="loader-overlay" hidden>
+        <div class="spinner"></div>
+        <div class="loader-text" id="loader-text">Выполняется...</div>
     </div>
 
     <script>
@@ -107,6 +153,10 @@
                 autoMatchEnabled: false,
                 matchInFlight: false,
                 dynamicInterval: MATCH_INTERVAL_MS,
+                pendingCaptureBlob: null,
+                capturePreviewUrl: null,
+                lastPersonName: "",
+                lastMatchedName: "",
             };
 
             const detectorDropzone = document.getElementById("detector-dropzone");
@@ -131,12 +181,52 @@
             const matchError = document.getElementById("match-error");
             const matchStatus = document.getElementById("match-status");
             const matchResult = document.getElementById("match-result");
+            const uploadForm = document.getElementById("upload-form");
+            const uploadName = document.getElementById("upload-name");
+            const uploadDropzone = document.getElementById("upload-dropzone");
+            const uploadInput = document.getElementById("upload-input");
+            const uploadPreview = document.getElementById("upload-preview");
+            const uploadCount = document.getElementById("upload-count");
+            const uploadError = document.getElementById("upload-error");
+            const uploadStatus = document.getElementById("upload-status");
+            const facesGrid = document.getElementById("faces-grid");
+            const facesHint = document.getElementById("faces-hint");
             const noFacesNotice = document.getElementById("no-faces-notice");
+            const capturePhotoBtn = document.getElementById("capture-photo");
+            const captureModal = document.getElementById("capture-modal");
+            const capturePreview = document.getElementById("capture-preview");
+            const captureNameInput = document.getElementById("capture-name");
+            const saveCaptureBtn = document.getElementById("save-capture");
+            const cancelCaptureBtn = document.getElementById("cancel-capture");
+            const captureError = document.getElementById("capture-error");
+            const globalLoader = document.getElementById("global-loader");
+            const loaderTextNode = document.getElementById("loader-text");
+            let loaderDepth = 0;
 
             function setError(element, message) {
                 if (!element) return;
                 element.textContent = message || "";
                 element.hidden = !message;
+            }
+
+            function showLoader(message) {
+                if (!globalLoader) return;
+                loaderDepth += 1;
+                if (loaderTextNode && message) {
+                    loaderTextNode.textContent = message;
+                }
+                globalLoader.hidden = false;
+            }
+
+            function hideLoader() {
+                if (!globalLoader) return;
+                loaderDepth = Math.max(0, loaderDepth - 1);
+                if (loaderDepth === 0) {
+                    globalLoader.hidden = true;
+                    if (loaderTextNode) {
+                        loaderTextNode.textContent = "Выполняется...";
+                    }
+                }
             }
 
             function setStatus(element, message, variant) {
@@ -160,17 +250,31 @@
                 }
             }
 
-            function updateKnownFacesState(hasFaces) {
+            function updateKnownFacesState(hasFaces, countValue) {
+                const previouslyHadFaces = state.hasKnownFaces;
                 state.hasKnownFaces = hasFaces;
                 if (noFacesNotice) {
                     noFacesNotice.hidden = hasFaces;
                 }
+                if (facesHint) {
+                    facesHint.hidden = !hasFaces;
+                }
                 if (document.body) {
-                    document.body.dataset.knownCount = hasFaces ? "1" : "0";
+                    const value = typeof countValue === "number"
+                        ? String(countValue)
+                        : hasFaces
+                            ? "1"
+                            : "0";
+                    document.body.dataset.knownCount = value;
                 }
                 updateMatchControls();
-                if (hasFaces && state.mediaStream) {
+                if (!hasFaces) {
+                    stopAutoMatch();
+                } else if (state.mediaStream && !previouslyHadFaces) {
                     beginAutoMatch(true);
+                }
+                if (hasFaces) {
+                    state.dynamicInterval = MATCH_INTERVAL_MS;
                 }
             }
 
@@ -195,7 +299,7 @@
                 }
             }
 
-            function setupDropzone(dropzone, input, preview) {
+            function setupDropzone(dropzone, input, preview, onFilesSelected) {
                 if (!dropzone || !input) return;
 
                 dropzone.addEventListener("click", () => input.click());
@@ -214,18 +318,274 @@
                     dropzone.classList.remove("dragover");
                     if (event.dataTransfer.files.length) {
                         setInputFilesFromList(input, event.dataTransfer.files);
-                        showPreview(input.files[0], preview);
+                        if (preview && input.files.length) {
+                            showPreview(input.files[0], preview);
+                        }
+                        if (onFilesSelected) {
+                            onFilesSelected(input.files);
+                        }
                     }
                 });
 
                 input.addEventListener("change", (event) => {
                     if (event.target.files.length) {
-                        showPreview(event.target.files[0], preview);
+                        if (preview) {
+                            showPreview(event.target.files[0], preview);
+                        }
+                        if (onFilesSelected) {
+                            onFilesSelected(input.files);
+                        }
                     }
                 });
             }
 
+            function updateUploadSummary(files) {
+                if (!uploadCount) return;
+                if (!files || files.length === 0) {
+                    uploadCount.textContent = "";
+                    uploadCount.hidden = true;
+                    if (uploadPreview) {
+                        uploadPreview.src = "";
+                        uploadPreview.hidden = true;
+                    }
+                    return;
+                }
+                uploadCount.textContent = files.length === 1
+                    ? "Готово 1 фото"
+                    : `Готово ${files.length} фото`;
+                uploadCount.hidden = false;
+            }
+
+            function renderKnownFaces(faces) {
+                if (!facesGrid) return;
+                facesGrid.innerHTML = "";
+                if (!faces || !faces.length) {
+                    facesGrid.hidden = true;
+                    return;
+                }
+                facesGrid.hidden = false;
+                faces.forEach((face) => {
+                    const figure = document.createElement("figure");
+                    figure.className = "face-card";
+
+                    const deleteBtn = document.createElement("button");
+                    deleteBtn.type = "button";
+                    deleteBtn.className = "delete-face";
+                    deleteBtn.dataset.slug = face.slug;
+                    deleteBtn.textContent = "Удалить";
+                    figure.appendChild(deleteBtn);
+
+                    if (face.url) {
+                        const img = document.createElement("img");
+                        img.src = face.url;
+                        img.alt = face.name || "Предпросмотр";
+                        figure.appendChild(img);
+                    } else {
+                        const placeholder = document.createElement("div");
+                        placeholder.className = "face-placeholder";
+                        placeholder.textContent = "Нет превью";
+                        figure.appendChild(placeholder);
+                    }
+
+                    const caption = document.createElement("figcaption");
+                    caption.append(document.createTextNode(face.name || "Безымянный"));
+                    const countValue = Number(face.count || 0);
+                    if (!Number.isNaN(countValue) && countValue > 1) {
+                        const span = document.createElement("span");
+                        span.textContent = `${countValue} фото`;
+                        caption.appendChild(span);
+                    }
+                    figure.appendChild(caption);
+
+                facesGrid.appendChild(figure);
+            });
+
+                facesGrid.querySelectorAll("button.delete-face").forEach((button) => {
+                    button.addEventListener("click", async (event) => {
+                        event.preventDefault();
+                        const slug = event.currentTarget.dataset.slug;
+                        if (!slug) return;
+                        const confirmed = window.confirm("Удалить этого человека и все его фото?");
+                        if (!confirmed) return;
+                        showLoader("Удаляем данные...");
+                        try {
+                            const response = await fetch(`/api/face/${encodeURIComponent(slug)}`, { method: "DELETE" });
+                            const payload = await response.json();
+                            if (!response.ok || payload.error) {
+                                throw new Error(payload.error || "Не удалось удалить.");
+                            }
+                            if (payload.faces && Array.isArray(payload.faces)) {
+                                setKnownFaces(payload.faces);
+                                hideLoader();
+                            } else if (payload.faces_refresh) {
+                                setTimeout(() => {
+                                    refreshKnownFaces().finally(() => hideLoader());
+                                }, 300);
+                            }
+                        } catch (error) {
+                            alert(error.message || "Не удалось удалить.");
+                            hideLoader();
+                        }
+                    });
+                });
+            }
+
+            function setKnownFaces(faces) {
+                const list = Array.isArray(faces) ? faces : [];
+                renderKnownFaces(list);
+                updateKnownFacesState(list.length > 0, list.length);
+            }
+
+            async function refreshKnownFaces() {
+                try {
+                    const response = await fetch("/api/known-faces");
+                    if (!response.ok) {
+                        throw new Error("Не удалось загрузить список лиц.");
+                    }
+                    const payload = await response.json();
+                    if (payload && Array.isArray(payload.faces)) {
+                        setKnownFaces(payload.faces);
+                    }
+                } catch (error) {
+                    console.warn(error);
+                }
+            }
+
+            function resetUploadForm() {
+                if (uploadForm) {
+                    uploadForm.reset();
+                }
+                if (uploadInput) {
+                    uploadInput.value = "";
+                }
+                updateUploadSummary(null);
+            }
+
+            async function submitPortraits(personName, files, options = {}) {
+                const {
+                    label = "фото",
+                    errorElement = uploadError,
+                    statusElement = uploadStatus,
+                    loaderText = "Загрузка...",
+                    successStatus,
+                } = options;
+                const fileArray = Array.isArray(files) ? files : Array.from(files || []);
+                let loaderDeferred = false;
+                if (!fileArray.length) {
+                    throw new Error("Не выбраны файлы для загрузки.");
+                }
+
+                if (errorElement !== uploadError) {
+                    setError(uploadError, "");
+                }
+                setError(errorElement, "");
+                if (statusElement) {
+                    setStatus(statusElement, `Загрузка ${label}...`);
+                }
+                showLoader(loaderText);
+
+                const formData = new FormData();
+                formData.append("person", personName);
+                fileArray.forEach((file, index) => {
+                    const namedFile = file instanceof File
+                        ? file
+                        : new File([file], `photo-${index}.jpg`, { type: "image/jpeg" });
+                    formData.append("images", namedFile, namedFile.name || `photo-${index}.jpg`);
+                });
+
+                try {
+                    const response = await fetch("/api/upload-face", {
+                        method: "POST",
+                        body: formData,
+                    });
+                    const payload = await response.json();
+                    if (!response.ok || payload.error) {
+                        throw new Error(payload.error || "Не удалось загрузить файлы.");
+                    }
+
+                    const saved = Number(payload.saved ?? fileArray.length);
+                    const rejected = Array.isArray(payload.rejected) ? payload.rejected.length : 0;
+                    let message = successStatus
+                        || (saved === 1 ? "Сохранено 1 фото." : `Сохранено ${saved} фото.`);
+                    if (rejected > 0) {
+                        message += ` ${rejected} файл(ов) пропущено.`;
+                    }
+                    if (statusElement) {
+                        setStatus(statusElement, message, "success");
+                    }
+                    state.lastPersonName = personName;
+                    state.lastMatchedName = personName;
+
+                    if (payload.faces && Array.isArray(payload.faces)) {
+                        setKnownFaces(payload.faces);
+                    } else if (payload.faces_refresh) {
+                        loaderDeferred = true;
+                        setTimeout(() => {
+                            refreshKnownFaces().finally(() => hideLoader());
+                        }, 350);
+                    }
+
+                    return payload;
+                } catch (error) {
+                    if (statusElement) {
+                        setStatus(statusElement, "");
+                    }
+                    setError(errorElement, error.message || "Не удалось загрузить файлы.");
+                    throw error;
+                } finally {
+                    if (!loaderDeferred) {
+                        hideLoader();
+                    }
+                }
+            }
+
+            function openCaptureModal(blob) {
+                if (!captureModal) return;
+                if (state.capturePreviewUrl) {
+                    URL.revokeObjectURL(state.capturePreviewUrl);
+                }
+                state.pendingCaptureBlob = blob;
+                state.capturePreviewUrl = URL.createObjectURL(blob);
+                if (capturePreview) {
+                    capturePreview.src = state.capturePreviewUrl;
+                    capturePreview.hidden = false;
+                }
+                if (captureNameInput) {
+                    const suggested = (uploadName && uploadName.value.trim())
+                        || state.lastPersonName
+                        || state.lastMatchedName
+                        || "";
+                    captureNameInput.value = suggested;
+                    captureNameInput.focus();
+                    captureNameInput.select();
+                }
+                setError(captureError, "");
+                captureModal.hidden = false;
+                document.body.classList.add("modal-open");
+            }
+
+            function closeCaptureModal() {
+                if (!captureModal) return;
+                captureModal.hidden = true;
+                document.body.classList.remove("modal-open");
+                setError(captureError, "");
+                if (state.capturePreviewUrl) {
+                    URL.revokeObjectURL(state.capturePreviewUrl);
+                    state.capturePreviewUrl = null;
+                }
+                state.pendingCaptureBlob = null;
+                if (capturePreview) {
+                    capturePreview.src = "";
+                    capturePreview.hidden = true;
+                }
+                if (captureNameInput) {
+                    captureNameInput.value = "";
+                }
+            }
+
             setupDropzone(detectorDropzone, detectorInput, detectorPreview);
+            setupDropzone(uploadDropzone, uploadInput, uploadPreview, updateUploadSummary);
+            updateUploadSummary(uploadInput ? uploadInput.files : null);
 
             function clearAutoMatchTimer() {
                 if (state.autoMatchTimer) {
@@ -307,7 +667,7 @@
                     resultsPanel.hidden = true;
 
                     if (!detectorInput.files.length) {
-                        setError(detectorError, "Pick an image before running the detector.");
+                        setError(detectorError, "Выберите изображение для детектора.");
                         return;
                     }
 
@@ -315,7 +675,7 @@
                     formData.append("image", detectorInput.files[0]);
                     formData.append("threshold", detectorThreshold.value);
 
-                    setStatus(detectorStatus, "Running detector...");
+                    setStatus(detectorStatus, "Запускаем детектор...");
 
                     try {
                         const response = await fetch("/api/detect", {
@@ -326,7 +686,7 @@
                         const payload = await response.json();
 
                         if (!response.ok || payload.error) {
-                            throw new Error(payload.error || "Detector returned an error.");
+                            throw new Error(payload.error || "Детектор вернул ошибку.");
                         }
 
                         resultImage.src = payload.image;
@@ -334,22 +694,60 @@
                         resultsList.innerHTML = "";
                         if (payload.boxes.length === 0) {
                             const item = document.createElement("li");
-                            item.textContent = "No faces detected above the chosen threshold.";
+                            item.textContent = "Лица не обнаружены при заданном пороге.";
                             resultsList.appendChild(item);
                         } else {
                             payload.boxes.forEach((box, index) => {
                                 const item = document.createElement("li");
                                 const confidence = (box.confidence * 100).toFixed(1);
-                                item.textContent = `#${index + 1}: confidence ${confidence}%`;
+                                item.textContent = `#${index + 1}: уверенность ${confidence}%`;
                                 resultsList.appendChild(item);
                             });
                         }
                         resultsPanel.hidden = false;
-                        setStatus(detectorStatus, `Detected ${payload.boxes.length} face(s).`, "success");
+                        const count = payload.boxes.length;
+                        const label = count === 1 ? "Обнаружено 1 лицо." : `Обнаружено ${count} лиц.`;
+                        setStatus(detectorStatus, label, "success");
                     } catch (error) {
                         setError(detectorError, error.message);
                         resultsPanel.hidden = true;
                         setStatus(detectorStatus, "");
+                    }
+                });
+            }
+
+            if (uploadForm) {
+                uploadForm.addEventListener("submit", async (event) => {
+                    event.preventDefault();
+                    setError(uploadError, "");
+                    setStatus(uploadStatus, "");
+
+                    const name = uploadName ? uploadName.value.trim() : "";
+                    if (!name) {
+                        setError(uploadError, "Укажите имя человека для добавления в галерею.");
+                        return;
+                    }
+
+                    if (!uploadInput || uploadInput.files.length === 0) {
+                        setError(uploadError, "Выберите хотя бы один портрет для загрузки.");
+                        return;
+                    }
+
+                    const filesArray = Array.from(uploadInput.files || []);
+                    try {
+                        await submitPortraits(
+                            name,
+                            filesArray,
+                            {
+                                label: "фото",
+                                loaderText: "Загружаем портреты...",
+                                statusElement: uploadStatus,
+                                errorElement: uploadError,
+                            }
+                        );
+                        resetUploadForm();
+                    } catch (error) {
+                        // Error already surfaced by submitPortraits
                     }
                 });
             }
@@ -363,7 +761,7 @@
 
             async function startCamera() {
                 if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                    setError(matchError, "Camera APIs are not supported in this browser.");
+                    setError(matchError, "Браузер не поддерживает работу с камерой.");
                     return;
                 }
 
@@ -372,11 +770,14 @@
                     liveVideo.srcObject = stream;
                     state.mediaStream = stream;
                     setError(matchError, "");
-                    setStatus(matchStatus, "Camera ready.", "success");
+                    setStatus(matchStatus, "Камера готова.", "success");
+                    if (capturePhotoBtn) {
+                        capturePhotoBtn.disabled = false;
+                    }
                     beginAutoMatch(true);
                     updateMatchControls();
                 } catch (error) {
-                    setError(matchError, error.message || "Unable to access the camera.");
+                    setError(matchError, error.message || "Не удалось получить доступ к камере.");
                     setStatus(matchStatus, "");
                     stopAutoMatch();
                 }
@@ -393,18 +794,22 @@
                 setStatus(matchStatus, "");
                 stopAutoMatch();
                 updateMatchControls();
+                if (capturePhotoBtn) {
+                    capturePhotoBtn.disabled = true;
+                }
+                closeCaptureModal();
             }
 
             function captureFrame() {
                 return new Promise((resolve, reject) => {
                     if (!state.mediaStream) {
-                        reject(new Error("Start the camera before capturing a frame."));
+                        reject(new Error("Сначала включите камеру."));
                         return;
                     }
                     const width = liveVideo.videoWidth;
                     const height = liveVideo.videoHeight;
                     if (!width || !height) {
-                        reject(new Error("Camera is not ready yet. Try again in a moment."));
+                        reject(new Error("Камера ещё не готова. Попробуйте через секунду."));
                         return;
                     }
                     captureCanvas.width = width;
@@ -416,7 +821,7 @@
                             if (blob) {
                                 resolve(blob);
                             } else {
-                                reject(new Error("Failed to capture frame from camera."));
+                                reject(new Error("Не удалось сохранить кадр."));
                             }
                         },
                         "image/jpeg",
@@ -430,17 +835,17 @@
 
                 if (!state.mediaStream) {
                     if (!isAuto) {
-                        setError(matchError, "Start the camera before matching.");
+                        setError(matchError, "Включите камеру перед проверкой.");
                     }
                     return;
                 }
 
-                if (!state.hasKnownFaces) {
-                    if (!isAuto) {
-                        setError(matchError, "Add reference photos under templates/faces/ first.");
-                    }
-                    return;
+            if (!state.hasKnownFaces) {
+                if (!isAuto) {
+                    setError(matchError, "Сначала добавьте ваши фото в галерею.");
                 }
+                return;
+            }
 
                 if (state.matchInFlight) {
                     return;
@@ -449,7 +854,7 @@
                 state.matchInFlight = true;
                 if (!isAuto) {
                     setError(matchError, "");
-                    setStatus(matchStatus, "Comparing faces...");
+                    setStatus(matchStatus, "Сверяем лица...");
                 }
 
                 try {
@@ -467,7 +872,7 @@
                     const payload = await response.json();
 
                     if (!response.ok || payload.error) {
-                        const err = new Error(payload.error || "Face match failed.");
+                        const err = new Error(payload.error || "Сверка лиц завершилась с ошибкой.");
                         err.status = response.status;
                         throw err;
                     }
@@ -490,22 +895,28 @@
                         matchResult.hidden = false;
                     }
 
-                    let message = payload.greeting || (matched ? "Match!" : "Face not recognized.");
-                    message += ` Similarity ${(similarity * 100).toFixed(1)}% (threshold ${(threshold * 100).toFixed(1)}%).`;
+                    let message = payload.greeting || (matched ? "Совпадение!" : "Лицо не распознано.");
+                    message += ` Похожесть ${(similarity * 100).toFixed(1)}% (порог ${(threshold * 100).toFixed(1)}%).`;
                     const sampleCount = Number(payload.sample_count || 0);
                     if (sampleCount > 1 && matched) {
-                        message += ` Using ${sampleCount} reference photos.`;
+                        message += ` Используем ${sampleCount} эталонных фото.`;
                     } else if (!matched && sampleCount > 1 && payload.closest && payload.closest.name) {
-                        message += ` ${payload.closest.name} has ${sampleCount} reference photos.`;
+                        message += ` Для ${payload.closest.name} доступно ${sampleCount} эталонных фото.`;
                     }
                     if (!matched && payload.closest && payload.closest.name) {
-                        message += ` Closest match: ${payload.closest.name}.`;
+                        message += ` Ближайшее совпадение: ${payload.closest.name}.`;
                     }
 
                     setStatus(matchStatus, message, matched ? "success" : "fail");
                     setError(matchError, "");
+
+                    if (matched && payload.name) {
+                        state.lastMatchedName = payload.name;
+                    } else if (payload.closest && payload.closest.name) {
+                        state.lastMatchedName = payload.closest.name;
+                    }
                 } catch (error) {
-                    const message = error.message || "Face match failed.";
+                    const message = error.message || "Сверка лиц завершилась с ошибкой.";
                     const status = typeof error.status === "number" ? error.status : null;
 
                     if (status === 429 || status === 503) {
@@ -515,15 +926,16 @@
                         );
                     }
 
-                    if (isAuto && (status === 422 || /No face detected/i.test(message))) {
+                    const faceNotFound = /no face detected/i.test(message) || /не обнаружено лица/i.test(message);
+                    if (isAuto && (status === 422 || faceNotFound)) {
                         setError(matchError, "");
-                        setStatus(matchStatus, "Looking for a face...");
+                        setStatus(matchStatus, "Ищем лицо...");
                     } else {
                         setStatus(matchStatus, "");
                         setError(matchError, message);
                     }
 
-                    if (/no known faces/i.test(message)) {
+                    if (/no known faces/i.test(message) || /нет эталонных лиц/i.test(message)) {
                         updateKnownFacesState(false);
                         stopAutoMatch();
                     }
@@ -554,10 +966,77 @@
                 });
             }
 
+            if (capturePhotoBtn) {
+                capturePhotoBtn.addEventListener("click", async () => {
+                    try {
+                        const blob = await captureFrame();
+                        openCaptureModal(blob);
+                    } catch (error) {
+                    setStatus(uploadStatus, "");
+                    setError(uploadError, error.message || "Не удалось сохранить снимок.");
+                    }
+                });
+            }
+
+            if (saveCaptureBtn) {
+                saveCaptureBtn.addEventListener("click", async () => {
+                    if (!state.pendingCaptureBlob) {
+                        setError(captureError, "Сначала сделайте снимок.");
+                        return;
+                    }
+                    const name = captureNameInput ? captureNameInput.value.trim() : "";
+                    if (!name) {
+                        setError(captureError, "Введите имя, чтобы сохранить снимок.");
+                        if (captureNameInput) {
+                            captureNameInput.focus();
+                        }
+                        return;
+                    }
+                    const file = new File(
+                        [state.pendingCaptureBlob],
+                        `snapshot-${Date.now()}.jpg`,
+                        { type: state.pendingCaptureBlob.type || "image/jpeg" }
+                    );
+                    try {
+                        await submitPortraits(name, [file], {
+                            label: "снимок",
+                            errorElement: captureError,
+                            statusElement: uploadStatus,
+                            loaderText: "Сохраняем снимок...",
+                            successStatus: "Снимок сохранён.",
+                        });
+                        closeCaptureModal();
+                    } catch (error) {
+                        // Error surfaced via captureError
+                    }
+                });
+            }
+
+            if (cancelCaptureBtn) {
+                cancelCaptureBtn.addEventListener("click", () => {
+                    closeCaptureModal();
+                });
+            }
+
+            if (captureModal) {
+                captureModal.addEventListener("click", (event) => {
+                    if (event.target === captureModal) {
+                        closeCaptureModal();
+                    }
+                });
+            }
+
+            document.addEventListener("keydown", (event) => {
+                if (event.key === "Escape" && captureModal && !captureModal.hidden) {
+                    closeCaptureModal();
+                }
+            });
+
             window.addEventListener("beforeunload", () => {
                 stopCamera();
             });
 
+            refreshKnownFaces();
             updateMatchControls();
         })();
     </script>

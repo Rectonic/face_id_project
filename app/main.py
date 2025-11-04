@@ -3,10 +3,12 @@ import base64
 import math
 import pathlib
 import queue
+import re
 import shutil
 import ssl
 import threading
 import urllib.request
+import uuid
 import zipfile
 from typing import Dict, List, Optional, Tuple
 
@@ -26,6 +28,8 @@ ARCFACE_ARCHIVE_PATH = MODEL_DIR / "buffalo_l.zip"
 ARCFACE_MODEL_MEMBER = "w600k_r50.onnx"
 KNOWN_FACES_DIR = BASE_DIR / "templates" / "faces"
 VALID_FACE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
+MAX_PERSON_NAME_LENGTH = 80
 
 # URLs hosted by the OpenCV team for the pretrained face detector and ArcFace archive
 PROTOTXT_URL = "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt"
@@ -49,6 +53,8 @@ known_faces: Dict[str, Dict[str, object]] = {}
 
 MATCH_QUEUE_MAXSIZE = 2
 MATCH_TIMEOUT_SECONDS = 10
+reload_job_lock = threading.Lock()
+reload_job_running = False
 
 
 class MatchJob:
@@ -396,8 +402,19 @@ def load_known_faces() -> Dict[str, Dict[str, object]]:
             "filenames": info["sources"],
             "preview": info["sources"][0],
             "count": len(info["sources"]),
+            "slug": key,
         }
     return aggregated
+
+
+def slugify_person(name: str) -> str:
+    clean = name.strip().lower()[:MAX_PERSON_NAME_LENGTH]
+    clean = SLUG_PATTERN.sub("-", clean).strip("-")
+    return clean or "person"
+
+
+def is_allowed_face_file(filename: str) -> bool:
+    return pathlib.Path(filename).suffix.lower() in VALID_FACE_EXTENSIONS
 
 
 def perform_match(image_bytes: bytes, threshold_value: float) -> Tuple[int, Dict[str, object]]:
@@ -408,19 +425,18 @@ def perform_match(image_bytes: bytes, threshold_value: float) -> Tuple[int, Dict
     if not known_items:
         return 400, {
             "error": (
-                "No known faces loaded. Add portrait images under "
-                "templates/faces and reload the page."
+                "Нет эталонных лиц. Загрузите портреты и повторите попытку."
             )
         }
 
     np_array = np.frombuffer(image_bytes, dtype=np.uint8)
     image = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
     if image is None:
-        return 400, {"error": "Unable to decode the uploaded frame."}
+        return 400, {"error": "Не удалось обработать кадр."}
 
     candidate_embedding, detection = build_face_embedding(image, detector_threshold=0.4)
     if candidate_embedding is None or detection is None:
-        return 422, {"error": "No face detected in the frame."}
+        return 422, {"error": "На кадре не обнаружено лица."}
 
     best_similarity = -1.0
     best_info: Optional[Dict[str, object]] = None
@@ -431,18 +447,18 @@ def perform_match(image_bytes: bytes, threshold_value: float) -> Tuple[int, Dict
             best_info = info
 
     if best_info is None:
-        return 500, {"error": "No embeddings are available to compare."}
+        return 500, {"error": "Нет доступных эмбеддингов для сравнения."}
 
     is_match = best_similarity >= threshold_value
     match_name = best_info["display_name"] if is_match else None
-    label = best_info["display_name"] if is_match else "UNKNOWN"
+    label = best_info["display_name"] if is_match else "НЕИЗВЕСТНО"
     color = (0, 255, 0) if is_match else (0, 0, 255)
     secondary_text = f"(sim {best_similarity*100:.1f}%)"
     annotated = annotate_image(image, detection, label, color, secondary_text=secondary_text)
     greeting = (
-        f"Hello, {best_info['display_name']}!"
+        f"Привет, {best_info['display_name']}!"
         if is_match
-        else "Face not recognized. Try again."
+        else "Лицо не распознано. Попробуйте ещё раз."
     )
     sample_count = int(best_info.get("count", 1))
     samples = best_info.get("filenames", [])
@@ -468,6 +484,7 @@ def perform_match(image_bytes: bytes, threshold_value: float) -> Tuple[int, Dict
             "name": best_info["display_name"],
             "similarity": best_similarity,
         },
+        "person_slug": best_info.get("slug"),
         "sample_count": sample_count,
         "samples": samples,
     }
@@ -494,6 +511,58 @@ def ensure_known_faces_loaded() -> None:
         known_faces.clear()
         known_faces.update(faces)
         known_faces_snapshot = current_inventory
+
+
+def trigger_reload_known_faces() -> None:
+    global reload_job_running
+
+    def worker() -> None:
+        try:
+            reload_known_faces()
+        finally:
+            global reload_job_running
+            with reload_job_lock:
+                reload_job_running = False
+
+    with reload_job_lock:
+        if reload_job_running:
+            return
+        reload_job_running = True
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def get_known_faces_snapshot() -> List[Dict[str, object]]:
+    with known_faces_lock:
+        items = [
+            {
+                "slug": key,
+                "display_name": info["display_name"],
+                "count": info.get("count", 1),
+                "preview": info.get("preview"),
+            }
+            for key, info in sorted(
+                known_faces.items(), key=lambda item: item[1]["display_name"].lower()
+            )
+        ]
+    return items
+
+
+def build_known_faces_payload() -> List[Dict[str, object]]:
+    faces = get_known_faces_snapshot()
+    payload: List[Dict[str, object]] = []
+    for face in faces:
+        preview = face.get("preview")
+        payload.append(
+            {
+                "slug": face["slug"],
+                "name": face["display_name"],
+                "count": face["count"],
+                "preview": preview,
+                "url": url_for("serve_face_image", filename=preview) if preview else None,
+            }
+        )
+    return payload
 
 
 app = Flask(
@@ -527,21 +596,7 @@ def serve_face_image(filename: str):
 @app.route("/")
 def index():
     ensure_known_faces_loaded()
-    with known_faces_lock:
-        faces_for_template: List[Dict[str, object]] = []
-        for info in sorted(
-            known_faces.values(), key=lambda item: item["display_name"].lower()
-        ):
-            preview = info.get("preview")
-            faces_for_template.append(
-                {
-                    "name": info["display_name"],
-                    "count": info.get("count", 1),
-                    "url": url_for("serve_face_image", filename=preview)
-                    if preview
-                    else None,
-                }
-            )
+    faces_for_template = build_known_faces_payload()
     return render_template(
         "index.html",
         known_faces=faces_for_template,
@@ -552,13 +607,13 @@ def index():
 @app.post("/api/detect")
 def api_detect():
     if "image" not in request.files:
-        return jsonify({"error": "No file uploaded under field 'image'."}), 400
+        return jsonify({"error": "Файл с изображением не найден."}), 400
 
     file_storage = request.files["image"]
     file_bytes = file_storage.read()
 
     if not file_bytes:
-        return jsonify({"error": "Uploaded file is empty."}), 400
+        return jsonify({"error": "Загруженный файл пуст."}), 400
 
     threshold_value = request.form.get("threshold", type=float)
     if threshold_value is None:
@@ -570,7 +625,7 @@ def api_detect():
     image = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
 
     if image is None:
-        return jsonify({"error": "Unable to decode the uploaded image."}), 400
+        return jsonify({"error": "Не удалось обработать изображение."}), 400
 
     detections = detect_faces(image, face_net, confidence_threshold)
 
@@ -605,6 +660,13 @@ def api_detect():
     return jsonify({"boxes": response_boxes, "image": data_url})
 
 
+@app.get("/api/known-faces")
+def api_known_faces() -> Tuple[str, int]:
+    ensure_known_faces_loaded()
+    faces = build_known_faces_payload()
+    return jsonify({"faces": faces}), 200
+
+
 @app.post("/api/match")
 def api_match_face():
     ensure_known_faces_loaded()
@@ -616,8 +678,8 @@ def api_match_face():
             jsonify(
                 {
                     "error": (
-                        "No known faces loaded. Add portrait images under "
-                        "templates/faces and reload the page."
+                        "Нет эталонных лиц. Загрузите портреты в "
+                        "templates/faces и перезагрузите страницу."
                     )
                 }
             ),
@@ -625,38 +687,134 @@ def api_match_face():
         )
 
     if "image" not in request.files:
-        return jsonify({"error": "No file uploaded under field 'image'."}), 400
+        return jsonify({"error": "Файл с изображением не найден."}), 400
 
     file_bytes = request.files["image"].read()
     if not file_bytes:
-        return jsonify({"error": "Uploaded frame is empty."}), 400
+        return jsonify({"error": "Кадр не содержит данных."}), 400
 
     match_threshold = request.form.get("matchThreshold", type=float)
     if match_threshold is None:
         threshold_value = DEFAULT_MATCH_THRESHOLD
     else:
         threshold_value = float(np.clip(match_threshold, 0.1, 0.99))
-    if match_queue.full():
+    job = MatchJob(file_bytes, threshold_value)
+    try:
+        match_queue.put_nowait(job)
+    except queue.Full:
         return (
-            jsonify({"error": "Matcher busy. Try again in a moment."}),
+            jsonify({"error": "Сервис распознавания занят. Попробуйте позже."}),
             429,
         )
 
-    job = MatchJob(file_bytes, threshold_value)
-    match_queue.put(job)
-
     if not job.event.wait(timeout=MATCH_TIMEOUT_SECONDS):
-        return jsonify({"error": "Matcher timed out. Please retry."}), 503
+        return jsonify({"error": "Превышено время ожидания ответа. Попробуйте снова."}), 503
 
     if job.error:
         app.logger.exception("Match worker error", exc_info=job.error)
-        return jsonify({"error": "Internal matcher error."}), 500
+        return jsonify({"error": "Внутренняя ошибка распознавания."}), 500
 
     if not job.result:
-        return jsonify({"error": "Matcher returned no result."}), 500
+        return jsonify({"error": "Распознавание не вернуло результат."}), 500
 
     status, payload = job.result
     return jsonify(payload), status
+
+
+@app.post("/api/upload-face")
+def api_upload_face():
+    person_name = request.form.get("person", "").strip()
+    if not person_name:
+        return jsonify({"error": "Укажите имя человека."}), 400
+
+    files = request.files.getlist("images")
+    if not files:
+        capture = request.files.get("capture")
+        if capture and capture.filename:
+            files = [capture]
+        else:
+            single = request.files.get("image")
+            if single and single.filename:
+                files = [single]
+
+    valid_files = [storage for storage in files if storage and storage.filename]
+    if not valid_files:
+        return jsonify({"error": "Загрузите хотя бы одно изображение."}), 400
+
+    slug = slugify_person(person_name)
+    target_dir = (KNOWN_FACES_DIR / slug)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    saved = 0
+    rejected: List[str] = []
+    for storage in valid_files:
+        filename = storage.filename or ""
+        if not is_allowed_face_file(filename):
+            rejected.append(filename)
+            continue
+
+        extension = pathlib.Path(filename).suffix.lower()
+        unique_name = f"{slug}_{uuid.uuid4().hex[:8]}{extension}"
+        target_path = target_dir / unique_name
+        storage.save(str(target_path))
+        saved += 1
+
+    if not saved:
+        return jsonify({"error": "Не удалось сохранить изображения.", "rejected": rejected}), 400
+
+    trigger_reload_known_faces()
+
+    return (
+        jsonify(
+            {
+                "status": "uploaded",
+                "saved": saved,
+                "rejected": rejected,
+                "person": {
+                    "slug": slug,
+                    "name": person_name,
+                },
+                "faces_refresh": True,
+            }
+        ),
+        202,
+    )
+
+
+@app.delete("/api/face/<string:slug>")
+def api_delete_face(slug: str):
+    slug = slugify_person(slug)
+    target_dir = KNOWN_FACES_DIR / slug
+    if not target_dir.exists():
+        return jsonify({"error": "Человек не найден."}), 404
+
+    deleted_files = 0
+    for path in target_dir.glob("**/*"):
+        if path.is_file():
+            try:
+                path.unlink()
+                deleted_files += 1
+            except OSError:
+                app.logger.warning("Failed to delete %s", path)
+
+    try:
+        target_dir.rmdir()
+    except OSError:
+        pass
+
+    trigger_reload_known_faces()
+
+    return (
+        jsonify(
+            {
+                "status": "deleted",
+                "deleted_files": deleted_files,
+                "slug": slug,
+                "faces_refresh": True,
+            }
+        ),
+        202,
+    )
 
 
 def create_app() -> Flask:
