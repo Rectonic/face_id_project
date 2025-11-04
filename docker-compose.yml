@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  backend:
+    build: .
+    container_name: faceid-backend
+    restart: unless-stopped
+    volumes:
+      - ./templates/faces:/app/templates/faces
+      - ./models:/app/models
+    expose:
+      - "8000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: faceid-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      default:
+        aliases:
+          - backend
+
+networks:
+  default:
+    name: faceid-net

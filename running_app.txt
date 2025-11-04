@@ -1,0 +1,43 @@
+Here’s one way to serve the app at https://10.8.18.42 from inside Docker without touching the code:
+
+Generate a self-signed cert that includes the IP as a Subject Alternative Name (from the project root):
+
+mkdir -p certs
+
+openssl req -x509 -nodes -days 365 -newkey rsa4096 \
+  -keyout certs/server.key \
+  -out certs/server.crt \
+  -subj "/CN=10.8.18.42" \
+  -addext "subjectAltName=IP:10.8.18.42"
+On each client machine, import certs/server.crt into the OS/browser trust store so the warning disappears.
+
+docker-compose.yml and nginx.conf.template were added to the repo. They run the Flask container and proxy it through Nginx on port 443:
+
+services:
+  backend:
+    build: .
+    volumes:
+      - ./templates/faces:/app/templates/faces
+      - ./models:/app/models
+    expose:
+      - "8000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - backend
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+The Nginx config proxies https://10.8.18.42 to the Flask backend at http://backend:8000.
+
+Start the stack
+
+docker compose up --build -d
+Access the UI
+Visit https://10.8.18.42 from your browser/device. After trusting the certificate, the webcam should be available because the page now runs over HTTPS.
+
+If you prefer a public cert (Let’s Encrypt, etc.), replace the self-signed files in certs/ with the real key/cert.
+
