@@ -425,7 +425,7 @@ def perform_match(image_bytes: bytes, threshold_value: float) -> Tuple[int, Dict
     if not known_items:
         return 400, {
             "error": (
-                "Нет эталонных лиц. Загрузите портреты и повторите попытку."
+                "Нет загруженныхы лиц. Загрузите портреты и повторите попытку."
             )
         }
 

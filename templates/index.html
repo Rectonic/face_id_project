@@ -188,11 +188,6 @@
                 state.hasKnownFaces = hasFaces;
                 updateMatchControls();
                 if (!hasFaces) {
-                    stopAutoMatch();
-                } else if (state.mediaStream) {
-                    beginAutoMatch(true);
-                }
-                if (hasFaces) {
                     state.dynamicInterval = MATCH_INTERVAL_MS;
                 }
             }
@@ -470,13 +465,9 @@
                     capturePreview.hidden = false;
                 }
                 if (captureNameInput) {
-                    const suggested = (uploadName && uploadName.value.trim())
-                        || state.lastPersonName
-                        || state.lastMatchedName
-                        || "";
-                    captureNameInput.value = suggested;
+                    captureNameInput.value = "";
+                    captureNameInput.placeholder = "Введите ваше имя";
                     captureNameInput.focus();
-                    captureNameInput.select();
                 }
                 setError(captureError, "");
                 captureModal.hidden = false;
