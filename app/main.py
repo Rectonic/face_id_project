@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 from flask import Flask, abort, jsonify, render_template, request, send_from_directory, url_for
+import unicodedata
 
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
@@ -28,8 +29,9 @@ ARCFACE_ARCHIVE_PATH = MODEL_DIR / "buffalo_l.zip"
 ARCFACE_MODEL_MEMBER = "w600k_r50.onnx"
 KNOWN_FACES_DIR = BASE_DIR / "templates" / "faces"
 VALID_FACE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
+SLUG_PATTERN = re.compile(r"[^0-9a-zа-яё-]+")
 MAX_PERSON_NAME_LENGTH = 80
+DISPLAY_NAME_FILE = "_name.txt"
 
 # URLs hosted by the OpenCV team for the pretrained face detector and ArcFace archive
 PROTOTXT_URL = "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt"
@@ -362,6 +364,18 @@ def scan_faces_inventory() -> Tuple[Tuple[str, float, int], ...]:
     return tuple(sorted(inventory))
 
 
+def read_display_name(slug: str) -> str:
+    meta_path = KNOWN_FACES_DIR / slug / DISPLAY_NAME_FILE
+    if meta_path.exists():
+        try:
+            value = meta_path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        except OSError:
+            pass
+    return format_display_name(pathlib.Path(slug))
+
+
 def load_known_faces() -> Dict[str, Dict[str, object]]:
     grouped_embeddings: Dict[str, Dict[str, object]] = {}
     for image_name, _, _ in scan_faces_inventory():
@@ -377,10 +391,11 @@ def load_known_faces() -> Dict[str, Dict[str, object]]:
             person_key = relative_path.stem
         else:
             person_key = relative_path.parts[0]
+        display_name = read_display_name(person_key)
         entry = grouped_embeddings.setdefault(
             person_key,
             {
-                "display_name": format_display_name(person_key),
+                "display_name": display_name,
                 "embeddings": [],
                 "sources": [],
             },
@@ -408,9 +423,13 @@ def load_known_faces() -> Dict[str, Dict[str, object]]:
 
 
 def slugify_person(name: str) -> str:
-    clean = name.strip().lower()[:MAX_PERSON_NAME_LENGTH]
-    clean = SLUG_PATTERN.sub("-", clean).strip("-")
-    return clean or "person"
+    normalized = unicodedata.normalize("NFKC", name).strip().lower()
+    normalized = normalized[:MAX_PERSON_NAME_LENGTH]
+    slug = SLUG_PATTERN.sub("-", normalized)
+    slug = re.sub("-{2,}", "-", slug).strip("-")
+    if not slug:
+        slug = f"person-{uuid.uuid4().hex[:8]}"
+    return slug
 
 
 def is_allowed_face_file(filename: str) -> bool:
@@ -425,7 +444,7 @@ def perform_match(image_bytes: bytes, threshold_value: float) -> Tuple[int, Dict
     if not known_items:
         return 400, {
             "error": (
-                "Нет загруженныхы лиц. Загрузите портреты и повторите попытку."
+                "Нет эталонных лиц. Загрузите портреты и повторите попытку."
             )
         }
 
@@ -744,6 +763,12 @@ def api_upload_face():
     slug = slugify_person(person_name)
     target_dir = (KNOWN_FACES_DIR / slug)
     target_dir.mkdir(parents=True, exist_ok=True)
+
+    meta_path = target_dir / DISPLAY_NAME_FILE
+    try:
+        meta_path.write_text(person_name, encoding="utf-8")
+    except OSError:
+        pass
 
     saved = 0
     rejected: List[str] = []

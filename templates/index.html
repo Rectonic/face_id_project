@@ -78,7 +78,7 @@
 
     <div id="global-loader" class="loader-overlay" hidden>
         <div class="spinner"></div>
-        <div class="loader-text" id="loader-text">Выполняется...</div>
+        <div class="loader-text" id="loader-text">Модель обрабатывает ваше фото. Это может занять время</div>
     </div>
 
     <script>
@@ -95,20 +95,7 @@
                 pendingCaptureBlob: null,
                 capturePreviewUrl: null,
                 lastPersonName: "",
-                lastMatchedName: "",
             };
-
-            const detectorDropzone = document.getElementById("detector-dropzone");
-            const detectorInput = document.getElementById("detector-input");
-            const detectorPreview = document.getElementById("detector-preview");
-            const detectorForm = document.getElementById("detector-form");
-            const detectorError = document.getElementById("detector-error");
-            const detectorStatus = document.getElementById("detector-status");
-            const detectorThreshold = document.getElementById("detector-threshold");
-            const detectorThresholdValue = document.getElementById("detector-threshold-value");
-            const resultsPanel = document.getElementById("results-panel");
-            const resultImage = document.getElementById("result-image");
-            const resultsList = document.getElementById("results-list");
 
             const liveVideo = document.getElementById("live-video");
             const captureCanvas = document.getElementById("capture-canvas");
@@ -135,6 +122,7 @@
             const captureError = document.getElementById("capture-error");
             const globalLoader = document.getElementById("global-loader");
             const loaderTextNode = document.getElementById("loader-text");
+            const loaderInfoText = "Модель обрабатывает ваше фото. Это может занять время";
             let loaderDepth = 0;
 
             function setError(element, message) {
@@ -146,8 +134,10 @@
             function showLoader(message) {
                 if (!globalLoader) return;
                 loaderDepth += 1;
-                if (loaderTextNode && message) {
-                    loaderTextNode.textContent = message;
+                if (loaderTextNode) {
+                    loaderTextNode.textContent = message
+                        ? `${message}\n${loaderInfoText}`
+                        : loaderInfoText;
                 }
                 globalLoader.hidden = false;
             }
@@ -158,7 +148,7 @@
                 if (loaderDepth === 0) {
                     globalLoader.hidden = true;
                     if (loaderTextNode) {
-                        loaderTextNode.textContent = "Выполняется...";
+                        loaderTextNode.textContent = loaderInfoText;
                     }
                 }
             }
@@ -181,14 +171,6 @@
                         state.statusTimeouts.delete(element);
                     }, 5000);
                     state.statusTimeouts.set(element, handle);
-                }
-            }
-
-            function updateKnownFacesState(hasFaces) {
-                state.hasKnownFaces = hasFaces;
-                updateMatchControls();
-                if (!hasFaces) {
-                    state.dynamicInterval = MATCH_INTERVAL_MS;
                 }
             }
 
@@ -270,101 +252,6 @@
                 uploadCount.hidden = false;
             }
 
-            function renderKnownFaces(faces) {
-                if (!facesGrid) return;
-                facesGrid.innerHTML = "";
-                if (!faces || !faces.length) {
-                    facesGrid.hidden = true;
-                    return;
-                }
-                facesGrid.hidden = false;
-                faces.forEach((face) => {
-                    const figure = document.createElement("figure");
-                    figure.className = "face-card";
-
-                    const deleteBtn = document.createElement("button");
-                    deleteBtn.type = "button";
-                    deleteBtn.className = "delete-face";
-                    deleteBtn.dataset.slug = face.slug;
-                    deleteBtn.textContent = "Удалить";
-                    figure.appendChild(deleteBtn);
-
-                    if (face.url) {
-                        const img = document.createElement("img");
-                        img.src = face.url;
-                        img.alt = face.name || "Предпросмотр";
-                        figure.appendChild(img);
-                    } else {
-                        const placeholder = document.createElement("div");
-                        placeholder.className = "face-placeholder";
-                        placeholder.textContent = "Нет превью";
-                        figure.appendChild(placeholder);
-                    }
-
-                    const caption = document.createElement("figcaption");
-                    caption.append(document.createTextNode(face.name || "Безымянный"));
-                    const countValue = Number(face.count || 0);
-                    if (!Number.isNaN(countValue) && countValue > 1) {
-                        const span = document.createElement("span");
-                        span.textContent = `${countValue} фото`;
-                        caption.appendChild(span);
-                    }
-                    figure.appendChild(caption);
-
-                facesGrid.appendChild(figure);
-            });
-
-                facesGrid.querySelectorAll("button.delete-face").forEach((button) => {
-                    button.addEventListener("click", async (event) => {
-                        event.preventDefault();
-                        const slug = event.currentTarget.dataset.slug;
-                        if (!slug) return;
-                        const confirmed = window.confirm("Удалить этого человека и все его фото?");
-                        if (!confirmed) return;
-                        showLoader("Удаляем данные...");
-                        try {
-                            const response = await fetch(`/api/face/${encodeURIComponent(slug)}`, { method: "DELETE" });
-                            const payload = await response.json();
-                            if (!response.ok || payload.error) {
-                                throw new Error(payload.error || "Не удалось удалить.");
-                            }
-                            if (payload.faces && Array.isArray(payload.faces)) {
-                                setKnownFaces(payload.faces);
-                                hideLoader();
-                            } else if (payload.faces_refresh) {
-                                setTimeout(() => {
-                                    refreshKnownFaces().finally(() => hideLoader());
-                                }, 300);
-                            }
-                        } catch (error) {
-                            alert(error.message || "Не удалось удалить.");
-                            hideLoader();
-                        }
-                    });
-                });
-            }
-
-            function setKnownFaces(faces) {
-                const list = Array.isArray(faces) ? faces : [];
-                renderKnownFaces(list);
-                updateKnownFacesState(list.length > 0, list.length);
-            }
-
-            async function refreshKnownFaces() {
-                try {
-                    const response = await fetch("/api/known-faces");
-                    if (!response.ok) {
-                        throw new Error("Не удалось загрузить список лиц.");
-                    }
-                    const payload = await response.json();
-                    if (payload && Array.isArray(payload.faces)) {
-                        setKnownFaces(payload.faces);
-                    }
-                } catch (error) {
-                    console.warn(error);
-                }
-            }
-
             function resetUploadForm() {
                 if (uploadForm) {
                     uploadForm.reset();
@@ -384,7 +271,6 @@
                     successStatus,
                 } = options;
                 const fileArray = Array.isArray(files) ? files : Array.from(files || []);
-                let loaderDeferred = false;
                 if (!fileArray.length) {
                     throw new Error("Не выбраны файлы для загрузки.");
                 }
@@ -428,16 +314,9 @@
                         setStatus(statusElement, message, "success");
                     }
                     state.lastPersonName = personName;
-                    state.lastMatchedName = personName;
-
-                    if (payload.faces && Array.isArray(payload.faces)) {
-                        setKnownFaces(payload.faces);
-                    } else if (payload.faces_refresh) {
-                        loaderDeferred = true;
-                        setTimeout(() => {
-                            refreshKnownFaces().finally(() => hideLoader());
-                        }, 350);
-                    }
+                    state.hasKnownFaces = true;
+                    state.dynamicInterval = MATCH_INTERVAL_MS;
+                    updateMatchControls();
 
                     return payload;
                 } catch (error) {
@@ -447,9 +326,7 @@
                     setError(errorElement, error.message || "Не удалось загрузить файлы.");
                     throw error;
                 } finally {
-                    if (!loaderDeferred) {
-                        hideLoader();
-                    }
+                    hideLoader();
                 }
             }
 
@@ -493,7 +370,6 @@
                 }
             }
 
-            setupDropzone(detectorDropzone, detectorInput, detectorPreview);
             setupDropzone(uploadDropzone, uploadInput, uploadPreview, updateUploadSummary);
             updateUploadSummary(uploadInput ? uploadInput.files : null);
 
@@ -560,70 +436,6 @@
                 if (checkMatchBtn) {
                     checkMatchBtn.disabled = !hasStream || !state.hasKnownFaces;
                 }
-            }
-
-            if (detectorThreshold && detectorThresholdValue) {
-                detectorThresholdValue.textContent = Number(detectorThreshold.value).toFixed(2);
-                detectorThreshold.addEventListener("input", () => {
-                    detectorThresholdValue.textContent = Number(detectorThreshold.value).toFixed(2);
-                });
-            }
-
-            if (detectorForm) {
-                detectorForm.addEventListener("submit", async (event) => {
-                    event.preventDefault();
-                    setError(detectorError, "");
-                    setStatus(detectorStatus, "");
-                    resultsPanel.hidden = true;
-
-                    if (!detectorInput.files.length) {
-                        setError(detectorError, "Выберите изображение для детектора.");
-                        return;
-                    }
-
-                    const formData = new FormData();
-                    formData.append("image", detectorInput.files[0]);
-                    formData.append("threshold", detectorThreshold.value);
-
-                    setStatus(detectorStatus, "Запускаем детектор...");
-
-                    try {
-                        const response = await fetch("/api/detect", {
-                            method: "POST",
-                            body: formData,
-                        });
-
-                        const payload = await response.json();
-
-                        if (!response.ok || payload.error) {
-                            throw new Error(payload.error || "Детектор вернул ошибку.");
-                        }
-
-                        resultImage.src = payload.image;
-                        resultImage.hidden = false;
-                        resultsList.innerHTML = "";
-                        if (payload.boxes.length === 0) {
-                            const item = document.createElement("li");
-                            item.textContent = "Лица не обнаружены при заданном пороге.";
-                            resultsList.appendChild(item);
-                        } else {
-                            payload.boxes.forEach((box, index) => {
-                                const item = document.createElement("li");
-                                const confidence = (box.confidence * 100).toFixed(1);
-                                item.textContent = `#${index + 1}: уверенность ${confidence}%`;
-                                resultsList.appendChild(item);
-                            });
-                        }
-                        resultsPanel.hidden = false;
-                        const count = payload.boxes.length;
-                        const label = count === 1 ? "Обнаружено 1 лицо." : `Обнаружено ${count} лиц.`;
-                        setStatus(detectorStatus, label, "success");
-                    } catch (error) {
-                        setError(detectorError, error.message);
-                        resultsPanel.hidden = true;
-                        setStatus(detectorStatus, "");
-                    }
-                });
             }
 
             if (uploadForm) {
@@ -778,7 +590,7 @@
                         throw err;
                     }
 
-                    updateKnownFacesState(true);
+                    state.hasKnownFaces = true;
                     state.dynamicInterval = MATCH_INTERVAL_MS;
 
                     const matched = Boolean(payload.match);
@@ -809,11 +621,6 @@
                     setStatus(matchStatus, message, matched ? "success" : "fail");
                     setError(matchError, "");
 
-                    if (matched && payload.name) {
-                        state.lastMatchedName = payload.name;
-                    } else if (payload.closest && payload.closest.name) {
-                        state.lastMatchedName = payload.closest.name;
-                    }
                 } catch (error) {
                     const message = error.message || "Сверка лиц завершилась с ошибкой.";
                     const status = typeof error.status === "number" ? error.status : null;
@@ -835,7 +642,7 @@
                     }
 
                     if (/no known faces/i.test(message) || /нет эталонных лиц/i.test(message)) {
-                        updateKnownFacesState(false);
+                        state.hasKnownFaces = false;
                         stopAutoMatch();
                     }
                 } finally {
@@ -935,7 +742,6 @@
                 stopCamera();
             });
 
-            refreshKnownFaces();
             updateMatchControls();
         })();
     </script>
