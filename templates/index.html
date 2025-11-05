@@ -38,8 +38,7 @@
         <section class="panel" id="match-panel">
             <h2>2. Живая проверка</h2>
             <p>
-                Включите веб-камеру — и сверка будет идти автоматически, пока поток активен. Настройте порог похожести, чтобы управлять
-                строгостью сравнения (чем выше значение, тем строже). При необходимости нажмите «Проверить сейчас».
+                Включите веб-камеру — и сверка будет идти автоматически, пока поток активен. При необходимости нажмите «Проверить сейчас». Чтобы сохранить фото с камеры в библиотеку Face ID, нажмите «Сделать снимок». 
             </p>
             <video id="live-video" class="video-feed" autoplay playsinline muted></video>
             <canvas id="capture-canvas" hidden></canvas>
@@ -75,32 +74,6 @@
             </div>
         </div>
 
-        <section class="panel" id="detector-panel">
-            <h2>4. Песочница детектора</h2>
-            <form id="detector-form">
-                <div id="detector-dropzone" class="dropzone">
-                    <p><strong>Перетащите изображение</strong> или нажмите, чтобы выбрать</p>
-                    <input id="detector-input" type="file" accept="image/*" hidden>
-                    <img id="detector-preview" alt="Предпросмотр" hidden>
-                </div>
-                <div class="slider-row">
-                    <label for="detector-threshold">Порог детектора</label>
-                    <input id="detector-threshold" type="range" min="0.2" max="0.9" value="0.5" step="0.05">
-                    <div class="slider-value"><span id="detector-threshold-value">0.50</span></div>
-                </div>
-                <div class="button-row">
-                    <button type="submit">Определить лица</button>
-                </div>
-            </form>
-            <div id="detector-error" class="error" hidden></div>
-            <div id="detector-status" class="status"></div>
-        </section>
-
-        <section class="panel results" id="results-panel" hidden>
-            <h2>Результаты детектора</h2>
-            <img id="result-image" class="result-image" alt="Результаты детектора">
-            <ul id="results-list"></ul>
-        </section>
     </div>
 
     <div id="global-loader" class="loader-overlay" hidden>
